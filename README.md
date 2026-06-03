@@ -28,6 +28,9 @@ Create a deployment directory and download the example environment file:
 mkdir mail-inbound
 cd mail-inbound
 curl -fsSL https://raw.githubusercontent.com/dmarcoapp/mail-inbound/main/.env.example -o .env
+mkdir -p clamav
+curl -fsSL https://raw.githubusercontent.com/dmarcoapp/mail-inbound/main/clamav/clamd.conf -o clamav/clamd.conf
+curl -fsSL https://raw.githubusercontent.com/dmarcoapp/mail-inbound/main/clamav/freshclam.conf -o clamav/freshclam.conf
 nano .env
 ```
 
@@ -106,6 +109,8 @@ services:
     container_name: clamav
     restart: unless-stopped
     volumes:
+      - ./clamav/clamd.conf:/etc/clamav/clamd.conf:ro
+      - ./clamav/freshclam.conf:/etc/clamav/freshclam.conf:ro
       - clamav_data:/var/lib/clamav
     healthcheck:
       test: ["CMD", "clamdscan", "--version"]
