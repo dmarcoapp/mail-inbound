@@ -29,7 +29,12 @@ RUN chmod 755 \
         /etc/postfix/main.cf.template \
         /etc/postfix/master.cf.append \
     && mkdir -p \
-        /maildrop/incoming
+        /maildrop/incoming/.tmp \
+        /maildrop/dead-letter \
+    && chown 10001:10001 /maildrop/dead-letter \
+    && chmod 0755 /maildrop /maildrop/dead-letter \
+    && chmod 0777 /maildrop/incoming \
+    && chmod 1777 /maildrop/incoming/.tmp
 
 EXPOSE 25
 

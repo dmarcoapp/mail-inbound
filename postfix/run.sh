@@ -54,12 +54,15 @@ cp /etc/postfix/master.cf.dist /etc/postfix/master.cf
 sed -i 's/^[[:space:]]*smtp[[:space:]]\+inet[[:space:]].*smtpd$/smtp      inet  n       -       y       -       1       postscreen/' /etc/postfix/master.cf
 cat /etc/postfix/master.cf.append >> /etc/postfix/master.cf
 
-mkdir -p /maildrop/incoming /maildrop/incoming/.tmp
+mkdir -p /maildrop/incoming /maildrop/incoming/.tmp /maildrop/dead-letter
 # The processor claims queued files via rename(). Sticky-bit protection on the
 # shared inbox blocks that cross-user rename because Postfix writes as nobody.
 chmod 0755 /maildrop
 chmod 0777 /maildrop/incoming
 chmod 1777 /maildrop/incoming/.tmp
+# The processor image runs as uid/gid 10001 and is the only writer here.
+chown 10001:10001 /maildrop/dead-letter
+chmod 0755 /maildrop/dead-letter
 
 mkdir -p /var/spool/postfix/etc
 for f in resolv.conf hosts services nsswitch.conf; do
