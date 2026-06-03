@@ -1,0 +1,142 @@
+#!/bin/sh
+set -eu
+
+QUEUE_ID="${1:-unknown}"
+RECIPIENT="${2:-unknown}"
+CLIENT_IP="${3:-}"
+CLIENT_NAME="${4:-}"
+HELO_NAME="${5:-}"
+MAIL_FROM="${6:-}"
+INBOX_DIR="${PROCESSOR_INPUT_DIR:-/maildrop/incoming}"
+TMP_DIR="${INBOX_DIR}/.tmp"
+TMP_FILE=''
+TMP_META_FILE=''
+RESERVED_FILE=''
+FINAL_FILE=''
+FINAL_META=''
+
+log_line() {
+    level="$1"
+    message="$2"
+    printf '[%s] [postfix-drop] [%s] %s %s\n' "$level" "$(date -Iseconds)" "$message" "$3" >&2
+}
+
+json_escape() {
+    # Keep metadata JSON valid even if Postfix macros contain line breaks or
+    # common control characters.
+    printf '%s' "$1" | awk '
+        BEGIN {
+            ORS = "";
+            backspace = sprintf("%c", 8);
+            formfeed = sprintf("%c", 12);
+            carriage = sprintf("%c", 13);
+            tab = sprintf("%c", 9);
+            first = 1;
+        }
+        {
+            gsub(/\\/, "\\\\");
+            gsub(/"/, "\\\"");
+            gsub(backspace, "\\b");
+            gsub(formfeed, "\\f");
+            gsub(tab, "\\t");
+            gsub(carriage, "\\r");
+            if (!first) {
+                printf "\\n";
+            }
+            printf "%s", $0;
+            first = 0;
+        }
+    '
+}
+
+cleanup() {
+    if [ -n "$TMP_FILE" ] && [ -f "$TMP_FILE" ]; then
+        rm -f "$TMP_FILE"
+    fi
+    if [ -n "$TMP_META_FILE" ] && [ -f "$TMP_META_FILE" ]; then
+        rm -f "$TMP_META_FILE"
+    fi
+    if [ -n "$RESERVED_FILE" ] && [ -f "$RESERVED_FILE" ]; then
+        rm -f "$RESERVED_FILE"
+    fi
+}
+
+trap cleanup EXIT INT TERM
+
+mkdir -p "$INBOX_DIR" "$TMP_DIR"
+TMP_FILE="$(mktemp "${TMP_DIR}/${QUEUE_ID}.XXXXXX.eml")"
+
+if ! cat > "$TMP_FILE"; then
+    log_line "ERROR" "failed to spool message" "queue_id=${QUEUE_ID} recipient=${RECIPIENT}"
+    exit 75
+fi
+
+if ! chmod 0644 "$TMP_FILE"; then
+    log_line "ERROR" "failed to set message permissions" "queue_id=${QUEUE_ID} recipient=${RECIPIENT}"
+    exit 75
+fi
+
+TMP_META_FILE="$(mktemp "${TMP_DIR}/${QUEUE_ID}.XXXXXX.meta.json")"
+
+if ! printf '{"recipient":"%s","client_ip":"%s","client_name":"%s","helo":"%s","mail_from":"%s","queue_id":"%s","received_at":"%s"}\n' \
+    "$(json_escape "$RECIPIENT")" \
+    "$(json_escape "$CLIENT_IP")" \
+    "$(json_escape "$CLIENT_NAME")" \
+    "$(json_escape "$HELO_NAME")" \
+    "$(json_escape "$MAIL_FROM")" \
+    "$(json_escape "$QUEUE_ID")" \
+    "$(json_escape "$(date -Iseconds)")" \
+    > "$TMP_META_FILE"; then
+    log_line "ERROR" "failed to write metadata" "queue_id=${QUEUE_ID} recipient=${RECIPIENT}"
+    exit 75
+fi
+
+if ! chmod 0644 "$TMP_META_FILE"; then
+    log_line "ERROR" "failed to set metadata permissions" "queue_id=${QUEUE_ID} recipient=${RECIPIENT}"
+    exit 75
+fi
+
+RESERVE_ATTEMPTS=0
+while [ "$RESERVE_ATTEMPTS" -lt 10 ]; do
+    RESERVED_FILE="$(mktemp "${TMP_DIR}/${QUEUE_ID}.XXXXXX.reserve")"
+    RESERVED_NAME="${RESERVED_FILE##*/}"
+    FINAL_STEM="${RESERVED_NAME%.reserve}"
+    FINAL_FILE="${INBOX_DIR}/${FINAL_STEM}.eml"
+    FINAL_META="${INBOX_DIR}/${FINAL_STEM}.meta.json"
+    if [ ! -e "$FINAL_FILE" ] && [ ! -e "$FINAL_META" ]; then
+        rm -f "$RESERVED_FILE"
+        RESERVED_FILE=''
+        break
+    fi
+    rm -f "$RESERVED_FILE"
+    RESERVED_FILE=''
+    FINAL_FILE=''
+    FINAL_META=''
+    RESERVE_ATTEMPTS=$((RESERVE_ATTEMPTS + 1))
+done
+
+if [ -z "$FINAL_FILE" ] || [ -z "$FINAL_META" ]; then
+    log_line "ERROR" "failed to reserve final handoff path" "queue_id=${QUEUE_ID} recipient=${RECIPIENT}"
+    exit 75
+fi
+
+if ! mv "$TMP_META_FILE" "$FINAL_META"; then
+    FINAL_FILE=''
+    FINAL_META=''
+    log_line "ERROR" "failed to hand off metadata" "queue_id=${QUEUE_ID} recipient=${RECIPIENT}"
+    exit 75
+fi
+
+if ! mv "$TMP_FILE" "$FINAL_FILE"; then
+    rm -f "$FINAL_META"
+    FINAL_FILE=''
+    FINAL_META=''
+    log_line "ERROR" "failed to hand off message" "queue_id=${QUEUE_ID} recipient=${RECIPIENT}"
+    exit 75
+fi
+
+TMP_FILE=''
+TMP_META_FILE=''
+trap - EXIT INT TERM
+
+log_line "INFO" "queued message for processor" "queue_id=${QUEUE_ID} recipient=${RECIPIENT} path=${FINAL_FILE}"

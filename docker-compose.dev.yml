@@ -1,0 +1,71 @@
+services:
+  postfix:
+    environment:
+      SMTP_TLS_MODE: self-signed
+
+  processor:
+    environment:
+      WEBHOOK_URL: http://webhook-dev:3000/inbound-email
+      S3_ENDPOINT: http://minio:9000
+      S3_BUCKET: mail
+      S3_REGION: us-east-1
+      S3_FORCE_PATH_STYLE: "true"
+    depends_on:
+      clamav:
+        condition: service_started
+      minio:
+        condition: service_started
+      minio-init:
+        condition: service_completed_successfully
+      webhook-dev:
+        condition: service_started
+
+  webhook-dev:
+    build: .
+    container_name: mail-webhook-dev
+    command: ["node", "src/dev/webhookReceiver.js"]
+    env_file:
+      - .env
+      - path: .env.local
+        required: false
+    secrets:
+      - webhook_secret
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+
+  minio:
+    image: quay.io/minio/minio:RELEASE.2025-02-07T23-21-09Z
+    container_name: mail-minio-dev
+    environment:
+      MINIO_ROOT_USER: dev-access-key
+      MINIO_ROOT_PASSWORD: dev-secret-key
+    command: ["server", "/data", "--console-address", ":9001"]
+    volumes:
+      - minio_data:/data
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    restart: unless-stopped
+
+  minio-init:
+    image: minio/mc:RELEASE.2025-08-13T08-35-41Z-cpuv1
+    container_name: mail-minio-init
+    depends_on:
+      minio:
+        condition: service_started
+    environment:
+      MINIO_ROOT_USER: dev-access-key
+      MINIO_ROOT_PASSWORD: dev-secret-key
+      S3_BUCKET: mail
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        until mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"; do
+          sleep 2
+        done
+        mc mb --ignore-existing "local/$$S3_BUCKET"
+
+volumes:
+  minio_data:

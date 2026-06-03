@@ -1,0 +1,7 @@
+
+smtpd     pass  -       -       y       -       -       smtpd
+dnsblog   unix  -       -       y       -       0       dnsblog
+tlsproxy  unix  -       -       y       -       0       tlsproxy
+
+dmarcdrop unix  -       n       n       -       -       pipe
+  flags=Oq user=nobody argv=/usr/local/bin/drop-message ${queue_id} ${recipient} ${client_address} ${client_hostname} ${client_helo} ${sender}

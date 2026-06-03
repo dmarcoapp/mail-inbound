@@ -1,0 +1,54 @@
+compatibility_level = 3.6
+
+myhostname = ${SMTP_HOSTNAME}
+myorigin = $myhostname
+mydestination = ${ACCEPTED_RCPT_DOMAIN}
+append_dot_mydomain = no
+maillog_file = /dev/stdout
+
+inet_interfaces = all
+inet_protocols = ipv4
+mynetworks = 127.0.0.0/8 [::ffff:127.0.0.0]/104 [::1]/128
+postscreen_access_list = permit_mynetworks
+smtpd_delay_reject = yes
+
+default_transport = error:outbound delivery disabled
+relay_transport = error:outbound delivery disabled
+local_transport = dmarcdrop
+dmarcdrop_destination_recipient_limit = 1
+
+alias_maps =
+alias_database =
+local_recipient_maps =
+unknown_local_recipient_reject_code = 550
+
+smtpd_tls_security_level = ${SMTPD_TLS_SECURITY_LEVEL}
+${SMTP_TLS_CHAIN_LINE}
+smtpd_tls_loglevel = 1
+smtpd_tls_received_header = yes
+
+disable_vrfy_command = yes
+strict_rfc821_envelopes = yes
+smtputf8_enable = no
+
+message_size_limit = ${MAX_MESSAGE_BYTES}
+smtpd_helo_required = yes
+anvil_rate_time_unit = ${ANVIL_RATE_TIME_UNIT}
+smtpd_client_connection_count_limit = ${SMTPD_CLIENT_CONNECTION_COUNT_LIMIT}
+smtpd_client_connection_rate_limit = ${SMTPD_CLIENT_CONNECTION_RATE_LIMIT}
+smtpd_timeout = ${SMTPD_TIMEOUT}
+postscreen_greet_wait = 6s
+postscreen_greet_action = enforce
+postscreen_pipelining_enable = no
+postscreen_pipelining_action = enforce
+postscreen_non_smtp_command_enable = no
+postscreen_non_smtp_command_action = enforce
+postscreen_bare_newline_enable = no
+postscreen_bare_newline_action = enforce
+
+smtpd_relay_restrictions = reject_unauth_destination
+smtpd_sender_restrictions =
+    reject_non_fqdn_sender
+smtpd_recipient_restrictions =
+    reject_non_fqdn_recipient,
+    reject_unauth_destination

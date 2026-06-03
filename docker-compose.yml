@@ -1,0 +1,112 @@
+services:
+  postfix:
+    build:
+      context: .
+      dockerfile: postfix/Dockerfile
+    container_name: mail-postfix
+    env_file:
+      - .env
+      - path: .env.local
+        required: false
+    volumes:
+      - certs_shared:/certs:ro
+      - maildrop:/maildrop
+    ports:
+      - "25:25"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/healthcheck-mail-stack"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  processor:
+    build: .
+    container_name: mail-processor
+    env_file:
+      - .env
+      - path: .env.local
+        required: false
+    secrets:
+      - webhook_secret
+      - s3_access_key
+      - s3_secret_key
+    depends_on:
+      clamav:
+        condition: service_started
+    volumes:
+      - maildrop:/maildrop
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "src/processorHealthcheck.js"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 75s
+
+  certbot:
+    image: certbot/dns-cloudflare:v5.6.0
+    container_name: certbot-cloudflare
+    secrets:
+      - cloudflare_api_token
+    env_file:
+      - .env
+      - path: .env.local
+        required: false
+    volumes:
+      - letsencrypt:/etc/letsencrypt
+      - letsencrypt_lib:/var/lib/letsencrypt
+      - ./certbot/run.sh:/run.sh:ro
+    entrypoint: /bin/sh
+    command: ["/run.sh"]
+    restart: unless-stopped
+
+  cert_exporter:
+    image: alpine:3.20
+    container_name: cert-exporter
+    depends_on:
+      certbot:
+        condition: service_started
+    volumes:
+      - letsencrypt:/etc/letsencrypt:ro
+      - certs_shared:/certs
+      - ./certbot/export.sh:/export.sh:ro
+    env_file:
+      - .env
+      - path: .env.local
+        required: false
+    entrypoint: /bin/sh
+    command: ["/export.sh"]
+    restart: unless-stopped
+
+  clamav:
+    image: clamav/clamav-debian:1.4
+    container_name: clamav
+    restart: unless-stopped
+    volumes:
+      - ./clamav/clamd.conf:/etc/clamav/clamd.conf:ro
+      - ./clamav/freshclam.conf:/etc/clamav/freshclam.conf:ro
+    healthcheck:
+      test: ["CMD", "clamdscan", "--version"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  letsencrypt:
+  letsencrypt_lib:
+  certs_shared:
+  maildrop:
+
+secrets:
+  webhook_secret:
+    file: ./secrets/webhook_secret.txt
+
+  s3_access_key:
+    file: ./secrets/s3_access_key.txt
+
+  s3_secret_key:
+    file: ./secrets/s3_secret_key.txt
+
+  cloudflare_api_token:
+    file: ./secrets/cloudflare_token.txt

@@ -1,0 +1,12 @@
+node_modules
+dist
+.git
+.gitignore
+*.md
+.env
+.env.*
+secrets
+secrets/
+.env*.local
+.vscode
+.idea

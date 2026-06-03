@@ -1,0 +1,27 @@
+{
+  "name": "dmarco-mail-inbound",
+  "version": "1.0.0",
+  "private": true,
+  "description": "DMARC report processor fed by Postfix maildrop",
+  "license": "MIT",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/bootstrap.js",
+    "replay-dead-letter": "node src/replayDeadLetter.js",
+    "lint": "node scripts/checkSyntax.js",
+    "test": "node --test",
+    "coverage": "c8 node --test"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.649.0",
+    "@aws-sdk/lib-storage": "^3.649.0",
+    "dotenv": "^16.4.5",
+    "mailauth": "^4.8.6",
+    "mailparser": "^3.7.1",
+    "undici": "^7.19.1",
+    "yauzl": "^2.10.0"
+  },
+  "devDependencies": {
+    "c8": "^10.1.3"
+  }
+}

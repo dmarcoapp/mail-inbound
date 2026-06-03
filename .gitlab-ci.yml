@@ -1,0 +1,27 @@
+stages:
+  - deploy
+
+deploy:
+  stage: deploy
+  image: debian:bookworm-slim
+  before_script:
+    - apt-get update && apt-get install -y --no-install-recommends openssh-client rsync ca-certificates
+    - mkdir -p ~/.ssh
+    - echo "$SSH_PRIVATE_KEY" | base64 -d > ~/.ssh/id_rsa
+    - chmod 600 ~/.ssh/id_rsa
+    - ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+  script:
+    - echo "Deploying to production server..."
+    - rsync -avzqR --exclude '.git' --exclude 'secrets' --exclude '.env' --exclude 'node_modules' --delete ./ "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH"
+    - |
+      ssh -p 22 "$DEPLOY_USER@$DEPLOY_HOST" << EOF
+      set -euo pipefail
+      cd "$DEPLOY_PATH"
+      docker compose pull --ignore-buildable
+      docker compose build
+      docker compose up -d --remove-orphans
+      EOF
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: manual
+    - when: never
