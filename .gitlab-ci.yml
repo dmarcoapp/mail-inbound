@@ -17,7 +17,6 @@ deploy:
       set -euo pipefail
       cd "$DEPLOY_PATH"
       docker compose pull --ignore-buildable
-      docker compose build
       docker compose up -d --remove-orphans
       EOF
   rules:
