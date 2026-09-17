@@ -113,9 +113,16 @@ async function validateMessageAuthentication(filePath, { parsed = null, delivery
     const helo = String(delivery?.helo || delivery?.clientName || '').trim();
     const trustReceived = !(ip && sender);
 
+    const messageStream = fs.createReadStream(filePath);
+    // authenticate stops reading when it throws, but it does not close the
+    // stream, and an 'error' with no listener is an uncaught exception. A
+    // failed check leaves the file on its way to the retry queue, so the
+    // pending open can still fail after we are done with it.
+    messageStream.on('error', () => {});
+
     let auth;
     try {
-        auth = await authenticate(fs.createReadStream(filePath), {
+        auth = await authenticate(messageStream, {
             sender: sender || undefined,
             ip: ip || undefined,
             helo: helo || undefined,
@@ -124,6 +131,7 @@ async function validateMessageAuthentication(filePath, { parsed = null, delivery
             mta: SMTP_HOSTNAME || undefined
         });
     } catch (err) {
+        messageStream.destroy();
         throw new TemporaryProcessingError('Message deferred: authentication checks unavailable', { cause: err });
     }
 

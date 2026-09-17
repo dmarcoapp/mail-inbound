@@ -58,12 +58,13 @@ function freshProcessMessageRequire(options = {}) {
 }
 
 async function withTempMessage(contents, fn) {
-    const filePath = path.join(os.tmpdir(), `processor-${Date.now()}.eml`);
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'processor-'));
+    const filePath = path.join(dir, 'message.eml');
     await fs.writeFile(filePath, contents);
     try {
         await fn(filePath);
     } finally {
-        await fs.unlink(filePath).catch(() => {});
+        await fs.rm(dir, { recursive: true, force: true });
     }
 }
 
@@ -432,13 +433,57 @@ test('processMessageFile treats retryable parse failures as temporary', async ()
                 }),
                 (err) => err?.name === 'TemporaryProcessingError' && err?.kind === 'temporary'
             );
-            await new Promise((resolve) => setImmediate(resolve));
         });
     } finally {
         restoreDelete();
         restoreMailparser();
         restoreConfig();
     }
+});
+
+test('processMessageFile closes the message stream when parsing fails', async () => {
+    const restoreConfig = mockModule(path.resolve(__dirname, '../src/config.js'), {
+        REQUIRE_ATTACHMENTS_BOOL: true,
+        MAX_ATTACHMENTS_NUM: 1,
+        ALLOWED_ATTACHMENT_EXTENSIONS_SET: new Set(['.xml']),
+        MAX_XML_BYTES_NUM: 1024 * 1024,
+        MAX_COMPRESSION_RATIO_NUM: 100
+    });
+
+    // Unlike the tests above, this parser leaves the stream alone, so whatever
+    // state it ends up in is the caller's doing.
+    let messageStream = null;
+    const restoreMailparser = mockModule('mailparser', {
+        simpleParser: async (stream) => {
+            messageStream = stream;
+            const err = new Error('read-fail');
+            err.code = 'EIO';
+            throw err;
+        }
+    });
+    const restoreDelete = mockModule(path.resolve(__dirname, '../src/s3/delete.js'), {
+        deleteFromS3: async () => {}
+    });
+
+    try {
+        const { processMessageFile } = freshProcessMessageRequire();
+        await withTempMessage(makeMessage('<feedback></feedback>'), async (filePath) => {
+            await assert.rejects(() => processMessageFile(filePath, {
+                envelopeRecipients: ['envelope@example.test']
+            }));
+        });
+    } finally {
+        restoreDelete();
+        restoreMailparser();
+        restoreConfig();
+    }
+
+    // An abandoned read stream holds a file descriptor open, and emits an
+    // unhandled 'error' when the file is moved to the retry queue while its
+    // open is still in flight, which takes the whole processor down.
+    assert.ok(messageStream);
+    assert.equal(messageStream.destroyed, true);
+    assert.ok(messageStream.listenerCount('error') > 0);
 });
 
 test('processMessageFile treats non-retryable parse failures as permanent', async () => {

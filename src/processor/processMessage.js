@@ -212,9 +212,17 @@ async function processMessageFile(
             throw new TemporaryProcessingError('Message deferred: ClamAV scan failed', { cause: err });
         }
 
+        const messageStream = fs.createReadStream(filePath);
+        // simpleParser stops reading when it throws, but it does not close the
+        // stream, and an 'error' with no listener is an uncaught exception. A
+        // failed parse leaves the file on its way to the retry queue, so the
+        // pending open can still fail after we are done with it.
+        messageStream.on('error', () => {});
+
         try {
-            parsed = await simpleParser(fs.createReadStream(filePath), { streamAttachments: true });
+            parsed = await simpleParser(messageStream, { streamAttachments: true });
         } catch (err) {
+            messageStream.destroy();
             throw wrapProcessingError(err, {
                 permanentMessage: 'Failed to parse message',
                 temporaryMessage: 'Message deferred: failed to read message'
