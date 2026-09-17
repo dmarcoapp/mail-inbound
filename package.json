@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "description": "DMARC report processor fed by Postfix maildrop",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "main": "src/index.js",
   "scripts": {
     "start": "node src/bootstrap.js",

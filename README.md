@@ -300,3 +300,7 @@ Example payload:
 - Oversized attachments, unsafe archive expansion, malformed archives, and non-DMARC XML are rejected.
 - Temporary S3, webhook, scanner, and DNS failures are retried; exhausted messages move to the dead-letter directory.
 - The webhook is a delivery signal, not a trust boundary. Your downstream app should still validate and parse the DMARC report before using it.
+
+## License
+
+Licensed under the Apache License, Version 2.0. See [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE).

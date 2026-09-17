@@ -6,6 +6,7 @@ COPY package.json package-lock.json* ./
 RUN npm ci --omit=dev
 
 COPY src ./src
+COPY LICENSE NOTICE ./
 
 # Non-root user
 RUN addgroup -S -g 10001 app && adduser -S -u 10001 app -G app \

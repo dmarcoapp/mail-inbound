@@ -49,7 +49,7 @@ services:
     restart: unless-stopped
 
   minio-init:
-    image: minio/mc:RELEASE.2025-08-13T08-35-41Z-cpuv1
+    image: quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z
     container_name: mail-minio-init
     depends_on:
       minio:
