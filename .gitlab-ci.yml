@@ -1,3 +1,12 @@
+# Deployment pipeline for the DMARCo project's own server.
+#
+# This is not part of installing DMARCo, and it is not something you need to
+# fork or copy. To run DMARCo yourself, use the ready-made stack and installer
+# in https://github.com/dmarcoapp/dmarcoapp instead.
+#
+# The job is manual and expects DEPLOY_HOST, DEPLOY_USER, DEPLOY_PATH and
+# SSH_PRIVATE_KEY to be set as protected GitLab CI variables.
+
 stages:
   - deploy
 

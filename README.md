@@ -1,8 +1,32 @@
-# dmarcoapp/mail-inbound
+<p align="center">
+  <img src=".github/logo.svg" alt="" width="80" height="80">
+</p>
 
-Self-hostable inbound mail gateway for DMARC aggregate reports.
+<h1 align="center">DMARCo Mail Inbound</h1>
 
-It accepts mail for one domain, keeps Postfix inbound-only, stores accepted report files in S3-compatible storage, and sends a signed webhook to your application.
+<p align="center">
+  Self-hostable inbound mail gateway for DMARC aggregate reports.
+</p>
+
+<p align="center">
+  <a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-blue.svg"></a>
+  <a href="https://github.com/dmarcoapp/mail-inbound/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/dmarcoapp/mail-inbound/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://github.com/dmarcoapp/mail-inbound/pkgs/container/mail-inbound%2Fprocessor"><img alt="Container images" src="https://img.shields.io/badge/ghcr.io-dmarcoapp%2Fmail--inbound-1f6feb"></a>
+</p>
+
+> [!IMPORTANT]
+> **Start at [dmarcoapp/dmarcoapp](https://github.com/dmarcoapp/dmarcoapp).**
+> That repository installs all of DMARCo — this mail gateway, the backend and
+> the dashboard — with one command, and it is the issue tracker for the whole
+> project. Something wrong, including in this component?
+> [Open an issue there](https://github.com/dmarcoapp/dmarcoapp/issues/new/choose).
+> This repository holds one component's source; it is not where you start if you
+> just want to run DMARCo.
+
+It accepts mail for one domain, keeps Postfix inbound-only, scans every message,
+stores accepted report files in S3-compatible storage, and sends a signed
+webhook to your application. It can run as part of DMARCo, or in front of any
+application that wants DMARC reports delivered as a webhook.
 
 ## Overview
 
@@ -20,7 +44,39 @@ Services:
 
 Only likely DMARC aggregate reports are forwarded.
 
+## Features
+
+- inbound-only Postfix: mail is accepted for one domain, outbound relay is
+  disabled
+- ClamAV scanning of every message before anything is uploaded or delivered
+- attachment allowlist with count, size and archive expansion limits
+- ZIP and gzip reports extracted and normalized to XML
+- non-DMARC XML, malformed archives and oversized attachments rejected
+- S3-compatible upload of accepted report files
+- signed webhook delivery with an HMAC signature and a replay timestamp
+- retries with a dead-letter directory, and a replay command for it
+- Let's Encrypt automation for SMTP TLS, plus external, self-signed and disabled
+  modes
+- container health checks and periodic processor metrics
+
+## Requirements
+
+- A Linux server with Docker and Docker Compose v2
+- A public IPv4 address with inbound TCP port `25` reaching the host. Many
+  providers block port `25` until you ask them to open it
+- A domain you can add `A` and `MX` records to, receiving no other mail
+- Roughly 2 GB of memory, most of it for the ClamAV signature database
+- S3-compatible object storage, and an endpoint that accepts the webhook
+- A Cloudflare DNS API token, only for `SMTP_TLS_MODE=real`
+
 ## Get Started
+
+> [!TIP]
+> Installing DMARCo itself? Use
+> [`dmarcoapp/dmarcoapp`](https://github.com/dmarcoapp/dmarcoapp) instead. It
+> runs this gateway together with the backend and the dashboard, and generates
+> the secrets for you. Follow the steps below only when you want the gateway on
+> its own, in front of your own application.
 
 Create a deployment directory and download the example environment file:
 
@@ -34,7 +90,19 @@ curl -fsSL https://raw.githubusercontent.com/dmarcoapp/mail-inbound/main/clamav/
 nano .env
 ```
 
-Copy this `docker-compose.yml` into the same directory:
+Review these values in `.env`:
+
+- `SMTP_HOSTNAME`: public MX hostname, for example `mx.example.com`
+- `ACCEPTED_RCPT_DOMAIN`: domain this server accepts mail for
+- `WEBHOOK_URL`: downstream webhook endpoint
+- `S3_ENDPOINT`, `S3_REGION`, `S3_BUCKET`: object storage target
+- `CERT_EMAIL`: Let's Encrypt registration email
+
+Put this `docker-compose.yml` in the same directory. It runs the published
+images, so nothing has to be built on the server.
+
+<details>
+<summary><code>docker-compose.yml</code> for the published images</summary>
 
 ```yaml
 name: dmarco-mail-inbound
@@ -138,22 +206,7 @@ secrets:
   cloudflare_api_token:
     file: ./secrets/cloudflare_token.txt
 ```
-
-Review these values in `.env`:
-
-- `SMTP_HOSTNAME`: public MX hostname, for example `mx.example.com`
-- `ACCEPTED_RCPT_DOMAIN`: domain this server accepts mail for
-- `WEBHOOK_URL`: downstream webhook endpoint
-- `S3_ENDPOINT`, `S3_REGION`, `S3_BUCKET`: object storage target
-- `CERT_EMAIL`: Let's Encrypt registration email
-
-The example uses `SMTP_TLS_MODE=real` for the built-in Let's Encrypt flow. It uses Cloudflare DNS validation and expects `secrets/cloudflare_token.txt`.
-
-Other Postfix TLS modes:
-
-- `SMTP_TLS_MODE=external`: use a mounted chain file from `SMTP_TLS_CHAIN_FILE`
-- `SMTP_TLS_MODE=self-signed`: generate a short-lived local certificate
-- `SMTP_TLS_MODE=disabled`: start SMTP without STARTTLS
+</details>
 
 Create the Docker secret files and start the stack:
 
@@ -169,15 +222,122 @@ docker compose ps
 docker compose logs -f postfix processor
 ```
 
-Create DNS records for inbound mail routing. For example, with `ACCEPTED_RCPT_DOMAIN=example.com` and `SMTP_HOSTNAME=mx.example.com`:
+Create DNS records for inbound mail routing. For example, with
+`ACCEPTED_RCPT_DOMAIN=example.com` and `SMTP_HOSTNAME=mx.example.com`:
 
-- `A` record: `mx.example.com` -> your server's public IPv4 address
-- `AAAA` record: `mx.example.com` -> your server's public IPv6 address, if the server accepts IPv6 SMTP
-- `MX` record: `example.com` -> `mx.example.com` with priority `10`
+| Type | Name | Value |
+| --- | --- | --- |
+| `A` | `mx.example.com` | your server's public IPv4 address |
+| `AAAA` | `mx.example.com` | your public IPv6 address, if the server accepts IPv6 SMTP |
+| `MX` | `example.com` | `mx.example.com` with priority `10` |
 
-Make sure TCP port `25` reaches the host. If `SMTP_TLS_MODE=real`, the Cloudflare DNS token must be able to create DNS validation records for `SMTP_HOSTNAME`.
+Make sure TCP port `25` reaches the host. If `SMTP_TLS_MODE=real`, the
+Cloudflare DNS token must be able to create DNS validation records for
+`SMTP_HOSTNAME`.
 
-`WEBHOOK_URL` and `S3_ENDPOINT` may use plain HTTP on a trusted internal network. This app does not enforce TLS for those endpoints.
+## Configuration
+
+Copy `.env.example` to `.env`. Optional overrides can go in `.env.local`; both
+Docker Compose and direct Node runs load it.
+
+Common settings:
+
+- `MAX_MESSAGE_BYTES`: SMTP message size limit
+- `REQUIRE_ATTACHMENTS`: require at least one attachment
+- `MAX_ATTACHMENTS`: accepted attachment count
+- `ALLOWED_ATTACHMENT_EXTENSIONS`: default `.xml,.zip,.gz,.gzip`
+- `MAX_XML_BYTES`: extracted XML size limit
+- `MAX_COMPRESSION_RATIO`: archive expansion limit
+- `CLAMAV_SCAN_ENABLED`: enable ClamAV scanning
+- `PROCESSOR_MAX_RETRIES`: retry limit before dead-lettering
+- `PROCESSOR_METRICS_LOG_MS`: interval for processor summary metric logs, or `0`
+  to disable
+
+Postfix TLS modes:
+
+- `SMTP_TLS_MODE=real`: built-in Let's Encrypt flow. It uses Cloudflare DNS
+  validation and expects `secrets/cloudflare_token.txt`
+- `SMTP_TLS_MODE=external`: use a mounted chain file from `SMTP_TLS_CHAIN_FILE`
+- `SMTP_TLS_MODE=self-signed`: generate a short-lived local certificate
+- `SMTP_TLS_MODE=disabled`: start SMTP without STARTTLS
+
+Docker secrets are mounted as:
+
+- `/run/secrets/webhook_secret`
+- `/run/secrets/s3_access_key`
+- `/run/secrets/s3_secret_key`
+- `/run/secrets/cloudflare_api_token`
+
+`WEBHOOK_URL` and `S3_ENDPOINT` may use plain HTTP on a trusted internal
+network. This app does not enforce TLS for those endpoints.
+
+## Webhook
+
+Accepted reports create a signed `POST` request to `WEBHOOK_URL`.
+
+Headers:
+
+- `X-Timestamp`: Unix epoch seconds
+- `X-Request-Id`: same value as `email_id`
+- `X-Signature`: `sha256=<hex>`
+
+Signature:
+
+```text
+HMAC_SHA256(timestamp + "." + raw_body, WEBHOOK_SECRET)
+```
+
+Payload includes `email_id`, `created_at`, `from`, `to`, `message_id`,
+`report_type`, and uploaded `attachments`.
+
+Example payload:
+
+```json
+{
+  "email_id": "f00dad2064a5c04ad0ef367abe88f46d778d361069036fc59e10bba10b0a8fb1",
+  "created_at": "2026-06-03T18:45:00.000Z",
+  "from": "Example Reports <reports@example.net>",
+  "to": ["dmarc@example.com"],
+  "message_id": "<report-20260603@example.net>",
+  "report_type": "dmarc_aggregate",
+  "attachments": [
+    {
+      "id": "4f7c3ef4-5f9c-41fb-a61a-1d6c75f8f0b7",
+      "bucket": "mail",
+      "key": "attachments/4f7c3ef4-5f9c-41fb-a61a-1d6c75f8f0b7",
+      "filename": "example.net!example.com!1717372800!1717459199.xml",
+      "content_type": "application/xml"
+    }
+  ]
+}
+```
+
+If you use [`dmarcoapp/backend`](https://github.com/dmarcoapp/backend), point
+`WEBHOOK_URL` at its `/v1/webhook/inbound_report_email` endpoint and use the
+same secret on both sides.
+
+## Message Handling
+
+- Postfix accepts mail only for `ACCEPTED_RCPT_DOMAIN`; outbound relay is
+  disabled.
+- Each message is scanned with ClamAV before any attachment is uploaded or
+  delivered.
+- Attachments must match the configured allowlist and are limited by count and
+  size.
+- ZIP and gzip reports are extracted and normalized to XML before upload.
+- Oversized attachments, unsafe archive expansion, malformed archives, and
+  non-DMARC XML are rejected.
+- Temporary S3, webhook, scanner, and DNS failures are retried; exhausted
+  messages move to the dead-letter directory.
+- The webhook is a delivery signal, not a trust boundary. Your downstream app
+  should still validate and parse the DMARC report before using it.
+
+## Production
+
+Images are published to `ghcr.io/dmarcoapp/mail-inbound/postfix`, `/processor`,
+`/certbot` and `/cert-exporter` on every GitHub release, tagged with the release
+version and `latest`. Pin the tags in `docker-compose.yml` if you would rather
+decide when new versions land.
 
 Before exposing the service:
 
@@ -218,89 +378,37 @@ Then start the local development stack with MinIO and a mock webhook receiver:
 docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build postfix processor clamav minio minio-init webhook-dev
 ```
 
-MinIO is available at `http://localhost:9001` with `dev-access-key` / `dev-secret-key`. The dev webhook receiver listens on `http://localhost:3000/inbound-email`.
+MinIO is available at `http://localhost:9001` with `dev-access-key` /
+`dev-secret-key`. The dev webhook receiver listens on
+`http://localhost:3000/inbound-email`.
 
-Useful commands:
+Before opening a pull request, run what CI runs:
 
 ```bash
 npm run lint
+npm test
 npm run coverage
+```
+
+Other useful commands:
+
+```bash
 npm run replay-dead-letter
 ```
 
-## Configuration
+Coding standards are in [`AGENTS.md`](AGENTS.md), and the contribution guide is
+in [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
-Copy `.env.example` to `.env`. Optional overrides can go in `.env.local`; both Docker Compose and direct Node runs load it.
+## Related Projects
 
-Common settings:
-
-- `MAX_MESSAGE_BYTES`: SMTP message size limit
-- `REQUIRE_ATTACHMENTS`: require at least one attachment
-- `MAX_ATTACHMENTS`: accepted attachment count
-- `ALLOWED_ATTACHMENT_EXTENSIONS`: default `.xml,.zip,.gz,.gzip`
-- `MAX_XML_BYTES`: extracted XML size limit
-- `MAX_COMPRESSION_RATIO`: archive expansion limit
-- `CLAMAV_SCAN_ENABLED`: enable ClamAV scanning
-- `PROCESSOR_MAX_RETRIES`: retry limit before dead-lettering
-- `PROCESSOR_METRICS_LOG_MS`: interval for processor summary metric logs, or `0` to disable
-
-Docker secrets are mounted as:
-
-- `/run/secrets/webhook_secret`
-- `/run/secrets/s3_access_key`
-- `/run/secrets/s3_secret_key`
-- `/run/secrets/cloudflare_api_token`
-
-## Webhook
-
-Accepted reports create a signed `POST` request to `WEBHOOK_URL`.
-
-Headers:
-
-- `X-Timestamp`: Unix epoch seconds
-- `X-Request-Id`: same value as `email_id`
-- `X-Signature`: `sha256=<hex>`
-
-Signature:
-
-```text
-HMAC_SHA256(timestamp + "." + raw_body, WEBHOOK_SECRET)
-```
-
-Payload includes `email_id`, `created_at`, `from`, `to`, `message_id`, `report_type`, and uploaded `attachments`.
-
-Example payload:
-
-```json
-{
-  "email_id": "f00dad2064a5c04ad0ef367abe88f46d778d361069036fc59e10bba10b0a8fb1",
-  "created_at": "2026-06-03T18:45:00.000Z",
-  "from": "Example Reports <reports@example.net>",
-  "to": ["dmarc@example.com"],
-  "message_id": "<report-20260603@example.net>",
-  "report_type": "dmarc_aggregate",
-  "attachments": [
-    {
-      "id": "4f7c3ef4-5f9c-41fb-a61a-1d6c75f8f0b7",
-      "bucket": "mail",
-      "key": "attachments/4f7c3ef4-5f9c-41fb-a61a-1d6c75f8f0b7",
-      "filename": "example.net!example.com!1717372800!1717459199.xml",
-      "content_type": "application/xml"
-    }
-  ]
-}
-```
-
-## Message Handling
-
-- Postfix accepts mail only for `ACCEPTED_RCPT_DOMAIN`; outbound relay is disabled.
-- Each message is scanned with ClamAV before any attachment is uploaded or delivered.
-- Attachments must match the configured allowlist and are limited by count and size.
-- ZIP and gzip reports are extracted and normalized to XML before upload.
-- Oversized attachments, unsafe archive expansion, malformed archives, and non-DMARC XML are rejected.
-- Temporary S3, webhook, scanner, and DNS failures are retried; exhausted messages move to the dead-letter directory.
-- The webhook is a delivery signal, not a trust boundary. Your downstream app should still validate and parse the DMARC report before using it.
+- [`dmarcoapp/dmarcoapp`](https://github.com/dmarcoapp/dmarcoapp): ready-made
+  Docker Compose stack and installer for the full application
+- [`dmarcoapp/backend`](https://github.com/dmarcoapp/backend): API, workers, and
+  report processing pipeline
+- [`dmarcoapp/dashboard`](https://github.com/dmarcoapp/dashboard): web UI for
+  reviewing DMARC aggregate reports
 
 ## License
 
-Licensed under the Apache License, Version 2.0. See [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE).
+Licensed under the Apache License, Version 2.0. See [`LICENSE`](LICENSE) and
+[`NOTICE`](NOTICE).

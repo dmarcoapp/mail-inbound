@@ -1,0 +1,14 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a problem with DMARCo
+    url: https://github.com/dmarcoapp/dmarcoapp/issues/new/choose
+    about: >
+      Every DMARCo issue is tracked in one place, including issues with this
+      component. Report it there and you do not have to work out which part is
+      at fault.
+  - name: Install or configure DMARCo
+    url: https://github.com/dmarcoapp/dmarcoapp#install
+    about: The one-command installer, DNS setup and the full documentation.
+  - name: Report a security vulnerability
+    url: https://github.com/dmarcoapp/dmarcoapp/security/advisories/new
+    about: Please report vulnerabilities privately, not in a public issue.

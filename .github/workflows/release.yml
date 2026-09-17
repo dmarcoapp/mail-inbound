@@ -82,8 +82,8 @@ jobs:
           flavor: |
             latest=false
           tags: |
-            type=match,pattern=^v([0-9]+\.[0-9]+(\.[0-9]+)?)$,group=1
-            type=raw,value=latest
+            type=match,pattern=^v([0-9]+(\.[0-9]+)*)$,group=1
+            type=raw,value=latest,enable=${{ !github.event.release.prerelease }}
 
       - name: Build and push
         uses: docker/build-push-action@v6
