@@ -1,7 +1,7 @@
 # Contributing
 
 This repository holds the DMARCo inbound mail gateway: Postfix, the Node
-processor and the certificate automation. Pull requests for that code belong
+processor, and the certificate automation. Pull requests for that code belong
 here.
 
 **Issues belong in [`dmarcoapp/dmarcoapp`](https://github.com/dmarcoapp/dmarcoapp/issues),**

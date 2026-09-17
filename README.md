@@ -5,7 +5,7 @@
 <h1 align="center">DMARCo Mail Inbound</h1>
 
 <p align="center">
-  Self-hostable inbound mail gateway for DMARC aggregate reports.
+  Self-hosted inbound mail gateway for DMARC aggregate reports.
 </p>
 
 <p align="center">
@@ -16,17 +16,20 @@
 
 > [!IMPORTANT]
 > **Start at [dmarcoapp/dmarcoapp](https://github.com/dmarcoapp/dmarcoapp).**
-> That repository installs all of DMARCo — this mail gateway, the backend and
-> the dashboard — with one command, and it is the issue tracker for the whole
-> project. Something wrong, including in this component?
-> [Open an issue there](https://github.com/dmarcoapp/dmarcoapp/issues/new/choose).
-> This repository holds one component's source; it is not where you start if you
-> just want to run DMARCo.
+> That repository installs all of DMARCo with one command: this mail gateway,
+> the backend, and the dashboard. It is also the issue tracker for the whole
+> project, so
+> [report anything that goes wrong there](https://github.com/dmarcoapp/dmarcoapp/issues/new/choose),
+> including problems in this component. What follows is one component's source,
+> for people working on it.
 
-It accepts mail for one domain, keeps Postfix inbound-only, scans every message,
-stores accepted report files in S3-compatible storage, and sends a signed
-webhook to your application. It can run as part of DMARCo, or in front of any
-application that wants DMARC reports delivered as a webhook.
+This gateway accepts mail for one domain, scans every message, keeps what looks
+like a DMARC aggregate report and rejects the rest, then uploads what it kept to
+S3-compatible storage and announces it with a signed webhook. Postfix is
+inbound-only and never relays.
+
+It runs as part of DMARCo, or in front of any application that would rather
+receive DMARC reports as a webhook than as email.
 
 ## Overview
 
@@ -42,22 +45,20 @@ Services:
 - `certbot` and `cert_exporter`: Let's Encrypt automation for Postfix TLS
 - `webhook-dev` and `minio`: optional local development services
 
-Only likely DMARC aggregate reports are forwarded.
-
 ## Features
 
-- inbound-only Postfix: mail is accepted for one domain, outbound relay is
+- Inbound-only Postfix: mail is accepted for one domain, outbound relay is
   disabled
 - ClamAV scanning of every message before anything is uploaded or delivered
-- attachment allowlist with count, size and archive expansion limits
+- Attachment allowlist with count, size, and archive expansion limits
 - ZIP and gzip reports extracted and normalized to XML
-- non-DMARC XML, malformed archives and oversized attachments rejected
+- Non-DMARC XML, malformed archives, and oversized attachments rejected
 - S3-compatible upload of accepted report files
-- signed webhook delivery with an HMAC signature and a replay timestamp
-- retries with a dead-letter directory, and a replay command for it
-- Let's Encrypt automation for SMTP TLS, plus external, self-signed and disabled
-  modes
-- container health checks and periodic processor metrics
+- Signed webhook delivery with an HMAC signature and a replay timestamp
+- Retries with a dead-letter directory, and a replay command for it
+- Let's Encrypt automation for SMTP TLS, plus external, self-signed, and
+  disabled modes
+- Container health checks and periodic processor metrics
 
 ## Requirements
 
@@ -69,7 +70,7 @@ Only likely DMARC aggregate reports are forwarded.
 - S3-compatible object storage, and an endpoint that accepts the webhook
 - A Cloudflare DNS API token, only for `SMTP_TLS_MODE=real`
 
-## Get Started
+## Get started
 
 > [!TIP]
 > Installing DMARCo itself? Use
@@ -255,7 +256,7 @@ Common settings:
 
 Postfix TLS modes:
 
-- `SMTP_TLS_MODE=real`: built-in Let's Encrypt flow. It uses Cloudflare DNS
+- `SMTP_TLS_MODE=real`: built-in Let's Encrypt flow, which uses Cloudflare DNS
   validation and expects `secrets/cloudflare_token.txt`
 - `SMTP_TLS_MODE=external`: use a mounted chain file from `SMTP_TLS_CHAIN_FILE`
 - `SMTP_TLS_MODE=self-signed`: generate a short-lived local certificate
@@ -316,7 +317,7 @@ If you use [`dmarcoapp/backend`](https://github.com/dmarcoapp/backend), point
 `WEBHOOK_URL` at its `/v1/webhook/inbound_report_email` endpoint and use the
 same secret on both sides.
 
-## Message Handling
+## Message handling
 
 - Postfix accepts mail only for `ACCEPTED_RCPT_DOMAIN`; outbound relay is
   disabled.
@@ -326,7 +327,8 @@ same secret on both sides.
   size.
 - ZIP and gzip reports are extracted and normalized to XML before upload.
 - Oversized attachments, unsafe archive expansion, malformed archives, and
-  non-DMARC XML are rejected.
+  non-DMARC XML are rejected, so only messages that look like DMARC aggregate
+  reports are forwarded.
 - Temporary S3, webhook, scanner, and DNS failures are retried; exhausted
   messages move to the dead-letter directory.
 - The webhook is a delivery signal, not a trust boundary. Your downstream app
@@ -335,9 +337,9 @@ same secret on both sides.
 ## Production
 
 Images are published to `ghcr.io/dmarcoapp/mail-inbound/postfix`, `/processor`,
-`/certbot` and `/cert-exporter` on every GitHub release, tagged with the release
-version and `latest`. Pin the tags in `docker-compose.yml` if you would rather
-decide when new versions land.
+`/certbot`, and `/cert-exporter` on every GitHub release, tagged with the
+release version and `latest`. Pin the tags in `docker-compose.yml` if you would
+rather decide when new versions land.
 
 Before exposing the service:
 
@@ -399,7 +401,7 @@ npm run replay-dead-letter
 Coding standards are in [`AGENTS.md`](AGENTS.md), and the contribution guide is
 in [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
-## Related Projects
+## Related projects
 
 - [`dmarcoapp/dmarcoapp`](https://github.com/dmarcoapp/dmarcoapp): ready-made
   Docker Compose stack and installer for the full application
