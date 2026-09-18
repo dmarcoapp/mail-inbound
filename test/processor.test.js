@@ -721,3 +721,63 @@ test('processMessageFile warns when uploaded attachment cleanup fails after webh
         warnings.some((args) => String(args[1] || '').includes('failed to remove uploaded attachment after downstream failure'))
     );
 });
+
+test('processMessageFile removes the uploaded attachment when the webhook rejects the recipient', async () => {
+    const restoreConfig = mockModule(path.resolve(__dirname, '../src/config.js'), {
+        REQUIRE_ATTACHMENTS_BOOL: true,
+        MAX_ATTACHMENTS_NUM: 1,
+        ALLOWED_ATTACHMENT_EXTENSIONS_SET: new Set(['.xml']),
+        MAX_XML_BYTES_NUM: 1024 * 1024,
+        MAX_COMPRESSION_RATIO_NUM: 100
+    });
+
+    const uploaded = [];
+    const restoreUpload = mockModule(path.resolve(__dirname, '../src/s3/upload.js'), {
+        uploadToS3: async (opts) => {
+            uploaded.push(opts.key);
+            return { bucket: 'bucket-a', key: opts.key };
+        }
+    });
+
+    const deleted = [];
+    const restoreDelete = mockModule(path.resolve(__dirname, '../src/s3/delete.js'), {
+        deleteFromS3: async (opts) => {
+            deleted.push(opts);
+        }
+    });
+
+    // The status classifiers stay real, because what is under test is that a
+    // 404 counts as permanent and therefore triggers the cleanup.
+    const realWebhook = require('../src/webhook/post');
+    const restoreWebhook = mockModule(path.resolve(__dirname, '../src/webhook/post.js'), {
+        postWebhook: async () => 404,
+        isHttpSuccess: realWebhook.isHttpSuccess,
+        isHttpPermanentFailure: realWebhook.isHttpPermanentFailure
+    });
+
+    const xml = [
+        '<feedback>',
+        '  <report_metadata><org_name>Example Reporter</org_name><report_id>id-1</report_id></report_metadata>',
+        '  <policy_published><domain>example.com</domain></policy_published>',
+        '  <record><row></row></record>',
+        '</feedback>'
+    ].join('');
+
+    try {
+        const { processMessageFile } = freshProcessMessageRequire();
+        await withTempMessage(makeMessage(xml), async (filePath) => {
+            await assert.rejects(
+                () => processMessageFile(filePath, { envelopeRecipients: ['nobody@example.test'] }),
+                isPermanentProcessingError
+            );
+        });
+
+        assert.equal(uploaded.length, 1);
+        assert.deepEqual(deleted, [{ bucket: 'bucket-a', key: uploaded[0] }]);
+    } finally {
+        restoreWebhook();
+        restoreDelete();
+        restoreUpload();
+        restoreConfig();
+    }
+});
