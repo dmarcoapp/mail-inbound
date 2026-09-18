@@ -75,3 +75,56 @@ test('validateAggregateDmarcReport rejects non-aggregate xml', async () => {
         );
     });
 });
+
+test('validateAggregateDmarcReport still extracts text after an unclosed tag', async () => {
+    const xml = [
+        '<feedback>',
+        '  <report_metadata>',
+        '    <org_name>Example Reporter</org_name>',
+        '    <report_id>abc-123</report_id>',
+        '    <comment><report_id>',
+        '  </report_metadata>',
+        '  <policy_published></policy_published>',
+        '  <record></record>',
+        '</feedback>'
+    ].join('\n');
+
+    await withTempFile('unclosed.xml', xml, async (filePath) => {
+        const result = await validateAggregateDmarcReport({ filePath });
+        assert.equal(result.reportId, 'abc-123');
+        assert.equal(result.orgName, 'Example Reporter');
+    });
+});
+
+// Locating both tags with one pattern needs a lazy match between them and a
+// quantified attribute list in the opening tag. Either one rescans the rest of
+// the document from every candidate tag, so the cost grows quadratically: at
+// 3 MiB these payloads already took 105 and 347 seconds, far past the worker
+// timeout, and one attachment stalled a worker through its whole retry run.
+const PADDINGS = {
+    'unclosed opening tags': '<report_id>',
+    'an opening tag that never ends': '<report_id a'
+};
+
+for (const [label, atom] of Object.entries(PADDINGS)) {
+    test(`validateAggregateDmarcReport handles a report padded with ${label} in linear time`, async () => {
+        const padding = atom.repeat(Math.round(10 * 1024 * 1024 / atom.length));
+        const xml = [
+            '<feedback>',
+            '  <report_metadata></report_metadata>',
+            '  <policy_published></policy_published>',
+            '  <record></record>',
+            `  ${padding}`,
+            '</feedback>'
+        ].join('\n');
+
+        await withTempFile('padded.xml', xml, async (filePath) => {
+            const startedAt = Date.now();
+            const result = await validateAggregateDmarcReport({ filePath });
+            const elapsedMs = Date.now() - startedAt;
+
+            assert.equal(result.reportId, '');
+            assert.ok(elapsedMs < 5000, `validation took ${elapsedMs}ms`);
+        });
+    });
+}
