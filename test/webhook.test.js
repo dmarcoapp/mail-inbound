@@ -68,19 +68,36 @@ test('postWebhook sends signed request and returns status', async () => {
 });
 
 test('isHttpSuccess and client failure helpers classify correctly', () => {
-    const { isHttpSuccess, isHttpPermanentFailure, isHttpRetryableClientFailure } = require('../src/webhook/post');
+    const {
+        isHttpSuccess,
+        isHttpPermanentFailure,
+        isHttpDeadLetterFailure,
+        isHttpRetryableClientFailure
+    } = require('../src/webhook/post');
     assert.equal(isHttpSuccess(200), true);
     assert.equal(isHttpSuccess(299), true);
     assert.equal(isHttpSuccess(300), false);
 
-    assert.equal(isHttpPermanentFailure(399), false);
-    assert.equal(isHttpPermanentFailure(400), true);
-    assert.equal(isHttpPermanentFailure(408), false);
-    assert.equal(isHttpPermanentFailure(409), false);
-    assert.equal(isHttpPermanentFailure(425), false);
+    assert.equal(isHttpPermanentFailure(404), true);
+    assert.equal(isHttpPermanentFailure(400), false);
+    assert.equal(isHttpPermanentFailure(401), false);
+    assert.equal(isHttpPermanentFailure(422), false);
     assert.equal(isHttpPermanentFailure(429), false);
-    assert.equal(isHttpPermanentFailure(499), true);
     assert.equal(isHttpPermanentFailure(500), false);
+
+    assert.equal(isHttpDeadLetterFailure(399), false);
+    assert.equal(isHttpDeadLetterFailure(400), true);
+    assert.equal(isHttpDeadLetterFailure(401), true);
+    assert.equal(isHttpDeadLetterFailure(403), true);
+    assert.equal(isHttpDeadLetterFailure(404), false);
+    assert.equal(isHttpDeadLetterFailure(408), false);
+    assert.equal(isHttpDeadLetterFailure(409), false);
+    assert.equal(isHttpDeadLetterFailure(413), true);
+    assert.equal(isHttpDeadLetterFailure(422), true);
+    assert.equal(isHttpDeadLetterFailure(425), false);
+    assert.equal(isHttpDeadLetterFailure(429), false);
+    assert.equal(isHttpDeadLetterFailure(499), true);
+    assert.equal(isHttpDeadLetterFailure(500), false);
 
     assert.equal(isHttpRetryableClientFailure(408), true);
     assert.equal(isHttpRetryableClientFailure(409), true);

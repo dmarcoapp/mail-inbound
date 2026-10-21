@@ -23,6 +23,17 @@ class TemporaryProcessingError extends ProcessingError {
     }
 }
 
+// Nothing is wrong with the message, but retrying cannot help either, because
+// the backend refuses it for a reason only the operator can fix, such as a
+// mismatched secret. The message goes straight to the dead-letter directory,
+// where it waits to be replayed once that is fixed.
+class DeadLetterProcessingError extends ProcessingError {
+    constructor(message, options = {}) {
+        super(message, { ...options, kind: 'dead-letter' });
+        this.name = 'DeadLetterProcessingError';
+    }
+}
+
 function permanentProcessingError(message, options = {}) {
     return new PermanentProcessingError(message, options);
 }
@@ -39,12 +50,18 @@ function isTemporaryProcessingError(err) {
     return err instanceof TemporaryProcessingError || err?.kind === 'temporary';
 }
 
+function isDeadLetterProcessingError(err) {
+    return err instanceof DeadLetterProcessingError || err?.kind === 'dead-letter';
+}
+
 module.exports = {
     ProcessingError,
     PermanentProcessingError,
     TemporaryProcessingError,
+    DeadLetterProcessingError,
     permanentProcessingError,
     temporaryProcessingError,
     isPermanentProcessingError,
-    isTemporaryProcessingError
+    isTemporaryProcessingError,
+    isDeadLetterProcessingError
 };

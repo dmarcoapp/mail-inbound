@@ -5,7 +5,7 @@ const { info, error } = require('./logger');
 
 async function main() {
     await ensureInputDir();
-    const result = await replayDeadLetters();
+    const result = await replayDeadLetters({ limit: Number.POSITIVE_INFINITY });
 
     info('dead-letter', 'replay completed', {
         replayed: result.replayed.length,

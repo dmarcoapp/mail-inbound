@@ -4,10 +4,12 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const {
+    DeadLetterProcessingError,
     permanentProcessingError,
     temporaryProcessingError,
     isPermanentProcessingError,
-    isTemporaryProcessingError
+    isTemporaryProcessingError,
+    isDeadLetterProcessingError
 } = require('../src/processingErrors');
 
 test('processing error helpers classify correctly', () => {
@@ -25,4 +27,14 @@ test('processing error helpers classify correctly', () => {
     assert.equal(temporary.kind, 'temporary');
     assert.equal(isTemporaryProcessingError(temporary), true);
     assert.equal(isPermanentProcessingError(temporary), false);
+
+    const deadLetter = new DeadLetterProcessingError('Refused by the backend');
+    assert.equal(deadLetter instanceof Error, true);
+    assert.equal(deadLetter.name, 'DeadLetterProcessingError');
+    assert.equal(deadLetter.kind, 'dead-letter');
+    assert.equal(isDeadLetterProcessingError(deadLetter), true);
+    assert.equal(isDeadLetterProcessingError({ kind: 'dead-letter' }), true);
+    assert.equal(isPermanentProcessingError(deadLetter), false);
+    assert.equal(isTemporaryProcessingError(deadLetter), false);
+    assert.equal(isDeadLetterProcessingError(permanent), false);
 });

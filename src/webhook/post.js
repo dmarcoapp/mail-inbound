@@ -25,8 +25,18 @@ function isHttpRetryableClientFailure(status) {
     return status === 408 || status === 409 || status === 425 || status === 429;
 }
 
+// The backend answers 404 for a recipient that belongs to no account, the one
+// refusal that is about the message itself, so only that one discards it.
 function isHttpPermanentFailure(status) {
-    return status >= 400 && status < 500 && !isHttpRetryableClientFailure(status);
+    return status === 404;
+}
+
+// Any other 4xx means the two sides disagree, about the secret or the shape of
+// the payload. That is a setup problem, and the report has to outlive it.
+function isHttpDeadLetterFailure(status) {
+    return status >= 400 && status < 500
+        && !isHttpPermanentFailure(status)
+        && !isHttpRetryableClientFailure(status);
 }
 
 async function postWebhook(payload) {
@@ -80,4 +90,10 @@ async function postWebhook(payload) {
     return status;
 }
 
-module.exports = { postWebhook, isHttpSuccess, isHttpPermanentFailure, isHttpRetryableClientFailure };
+module.exports = {
+    postWebhook,
+    isHttpSuccess,
+    isHttpPermanentFailure,
+    isHttpDeadLetterFailure,
+    isHttpRetryableClientFailure
+};

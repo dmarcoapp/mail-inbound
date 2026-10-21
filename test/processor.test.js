@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
-const { isPermanentProcessingError } = require('../src/processingErrors');
+const { isPermanentProcessingError, isDeadLetterProcessingError } = require('../src/processingErrors');
 
 function mockModule(modulePath, exports) {
     const resolved = require.resolve(modulePath, { paths: [__dirname] });
@@ -117,7 +117,8 @@ test('processMessageFile uploads valid DMARC reports and posts webhook', async (
             return 202;
         },
         isHttpSuccess: (status) => status >= 200 && status < 300,
-        isHttpPermanentFailure: () => false
+        isHttpPermanentFailure: () => false,
+        isHttpDeadLetterFailure: () => false
     });
 
     const xml = [
@@ -167,7 +168,8 @@ test('processMessageFile rejects infected messages before upload', async () => {
     const restoreWebhook = mockModule(path.resolve(__dirname, '../src/webhook/post.js'), {
         postWebhook: async () => 200,
         isHttpSuccess: () => true,
-        isHttpPermanentFailure: () => false
+        isHttpPermanentFailure: () => false,
+        isHttpDeadLetterFailure: () => false
     });
 
     const xml = [
@@ -214,7 +216,8 @@ test('processMessageFile defers when authentication checks are temporarily unava
     const restoreWebhook = mockModule(path.resolve(__dirname, '../src/webhook/post.js'), {
         postWebhook: async () => 200,
         isHttpSuccess: () => true,
-        isHttpPermanentFailure: () => false
+        isHttpPermanentFailure: () => false,
+        isHttpDeadLetterFailure: () => false
     });
 
     const xml = [
@@ -265,7 +268,8 @@ test('processMessageFile rejects non-DMARC attachments before webhook', async ()
             return 200;
         },
         isHttpSuccess: () => true,
-        isHttpPermanentFailure: () => false
+        isHttpPermanentFailure: () => false,
+        isHttpDeadLetterFailure: () => false
     });
 
     const xml = [
@@ -319,7 +323,8 @@ test('processMessageFile treats retryable local attachment failures as temporary
     const restoreWebhook = mockModule(path.resolve(__dirname, '../src/webhook/post.js'), {
         postWebhook: async () => 200,
         isHttpSuccess: () => true,
-        isHttpPermanentFailure: () => false
+        isHttpPermanentFailure: () => false,
+        isHttpDeadLetterFailure: () => false
     });
 
     const xml = [
@@ -368,9 +373,10 @@ test('processMessageFile removes uploaded attachments when webhook rejects paylo
         }
     });
     const restoreWebhook = mockModule(path.resolve(__dirname, '../src/webhook/post.js'), {
-        postWebhook: async () => 422,
+        postWebhook: async () => 404,
         isHttpSuccess: () => false,
-        isHttpPermanentFailure: () => true
+        isHttpPermanentFailure: () => true,
+        isHttpDeadLetterFailure: () => false
     });
 
     const xml = [
@@ -576,7 +582,8 @@ test('processMessageFile retries webhook temporary HTTP failures', async () => {
     const restoreWebhook = mockModule(path.resolve(__dirname, '../src/webhook/post.js'), {
         postWebhook: async () => 503,
         isHttpSuccess: () => false,
-        isHttpPermanentFailure: () => false
+        isHttpPermanentFailure: () => false,
+        isHttpDeadLetterFailure: () => false
     });
 
     const xml = [
@@ -625,7 +632,8 @@ test('processMessageFile retries when S3 upload throws', async () => {
     const restoreWebhook = mockModule(path.resolve(__dirname, '../src/webhook/post.js'), {
         postWebhook: async () => 200,
         isHttpSuccess: () => true,
-        isHttpPermanentFailure: () => false
+        isHttpPermanentFailure: () => false,
+        isHttpDeadLetterFailure: () => false
     });
 
     const xml = [
@@ -686,7 +694,8 @@ test('processMessageFile warns when uploaded attachment cleanup fails after webh
             throw new Error('socket-hangup');
         },
         isHttpSuccess: () => false,
-        isHttpPermanentFailure: () => false
+        isHttpPermanentFailure: () => false,
+        isHttpDeadLetterFailure: () => false
     });
 
     const xml = [
@@ -752,7 +761,8 @@ test('processMessageFile removes the uploaded attachment when the webhook reject
     const restoreWebhook = mockModule(path.resolve(__dirname, '../src/webhook/post.js'), {
         postWebhook: async () => 404,
         isHttpSuccess: realWebhook.isHttpSuccess,
-        isHttpPermanentFailure: realWebhook.isHttpPermanentFailure
+        isHttpPermanentFailure: realWebhook.isHttpPermanentFailure,
+        isHttpDeadLetterFailure: realWebhook.isHttpDeadLetterFailure
     });
 
     const xml = [
@@ -772,6 +782,68 @@ test('processMessageFile removes the uploaded attachment when the webhook reject
             );
         });
 
+        assert.equal(uploaded.length, 1);
+        assert.deepEqual(deleted, [{ bucket: 'bucket-a', key: uploaded[0] }]);
+    } finally {
+        restoreWebhook();
+        restoreDelete();
+        restoreUpload();
+        restoreConfig();
+    }
+});
+
+test('processMessageFile holds the message for dead-letter when the webhook refuses the signature', async () => {
+    const restoreConfig = mockModule(path.resolve(__dirname, '../src/config.js'), {
+        REQUIRE_ATTACHMENTS_BOOL: true,
+        MAX_ATTACHMENTS_NUM: 1,
+        ALLOWED_ATTACHMENT_EXTENSIONS_SET: new Set(['.xml']),
+        MAX_XML_BYTES_NUM: 1024 * 1024,
+        MAX_COMPRESSION_RATIO_NUM: 100
+    });
+
+    const uploaded = [];
+    const restoreUpload = mockModule(path.resolve(__dirname, '../src/s3/upload.js'), {
+        uploadToS3: async (opts) => {
+            uploaded.push(opts.key);
+            return { bucket: 'bucket-a', key: opts.key };
+        }
+    });
+
+    const deleted = [];
+    const restoreDelete = mockModule(path.resolve(__dirname, '../src/s3/delete.js'), {
+        deleteFromS3: async (opts) => {
+            deleted.push(opts);
+        }
+    });
+
+    // A 401 is what a mismatched WEBHOOK_SECRET produces. The classifiers stay
+    // real, because what is under test is that it no longer counts as permanent.
+    const realWebhook = require('../src/webhook/post');
+    const restoreWebhook = mockModule(path.resolve(__dirname, '../src/webhook/post.js'), {
+        postWebhook: async () => 401,
+        isHttpSuccess: realWebhook.isHttpSuccess,
+        isHttpPermanentFailure: realWebhook.isHttpPermanentFailure,
+        isHttpDeadLetterFailure: realWebhook.isHttpDeadLetterFailure
+    });
+
+    const xml = [
+        '<feedback>',
+        '  <report_metadata><org_name>Example Reporter</org_name><report_id>id-1</report_id></report_metadata>',
+        '  <policy_published><domain>example.com</domain></policy_published>',
+        '  <record><row></row></record>',
+        '</feedback>'
+    ].join('');
+
+    try {
+        const { processMessageFile } = freshProcessMessageRequire();
+        await withTempMessage(makeMessage(xml), async (filePath) => {
+            await assert.rejects(
+                () => processMessageFile(filePath, { envelopeRecipients: ['reports@example.test'] }),
+                (err) => isDeadLetterProcessingError(err) && !isPermanentProcessingError(err)
+            );
+        });
+
+        // The upload is removed all the same: a replay uploads the report again.
         assert.equal(uploaded.length, 1);
         assert.deepEqual(deleted, [{ bucket: 'bucket-a', key: uploaded[0] }]);
     } finally {

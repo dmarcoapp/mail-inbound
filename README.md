@@ -250,7 +250,10 @@ Common settings:
 - `MAX_XML_BYTES`: extracted XML size limit
 - `MAX_COMPRESSION_RATIO`: archive expansion limit
 - `CLAMAV_SCAN_ENABLED`: enable ClamAV scanning
-- `PROCESSOR_MAX_RETRIES`: retry limit before dead-lettering
+- `PROCESSOR_MAX_RETRIES`: retries before dead-lettering, default `125`. The
+  wait doubles from `PROCESSOR_RETRY_DELAY_MS` (30 seconds) up to
+  `PROCESSOR_MAX_RETRY_DELAY_MS` (an hour), so the default keeps trying for
+  about five days
 - `PROCESSOR_METRICS_LOG_MS`: interval for processor summary metric logs, or `0`
   to disable
 
@@ -331,6 +334,12 @@ same secret on both sides.
   reports are forwarded.
 - Temporary S3, webhook, scanner, and DNS failures are retried; exhausted
   messages move to the dead-letter directory.
+- A webhook answer of `404`, an unknown recipient, discards the message. Any
+  other `4xx` the retries cannot fix, such as `401` from a mismatched secret,
+  moves it to the dead-letter directory straight away, to be replayed once the
+  cause is fixed.
+- A message the processor fails to move is left where it is, never deleted,
+  and picked up again on the next start.
 - The webhook is a delivery signal, not a trust boundary. Your downstream app
   should still validate and parse the DMARC report before using it.
 

@@ -24,6 +24,7 @@ function freshIndexRequire(inputDir, options = {}) {
         PROCESSOR_INPUT_DIR: inputDir,
         PROCESSOR_POLL_MS_NUM: 1000,
         PROCESSOR_RETRY_DELAY_MS_NUM: 30_000,
+        PROCESSOR_MAX_RETRY_DELAY_MS_NUM: 3_600_000,
         PROCESSOR_MAX_RETRIES_NUM: 3,
         PROCESSOR_MAX_BATCH_SIZE_NUM: 10,
         PROCESSOR_MAX_CONCURRENCY_NUM: 4,
@@ -369,8 +370,9 @@ test('handleOneFile deletes accepted bundles after successful processing', async
     });
 });
 
-test('handleOneFile deletes exhausted temporary failures when dead-letter move fails', async () => {
+test('handleOneFile keeps exhausted temporary failures when the dead-letter move fails', async () => {
     await withTempDir(async (inputDir) => {
+        // No dead-letter directory exists, so the move fails.
         const messagePath = path.join(inputDir, 'message.eml');
         const metadataPath = path.join(inputDir, 'message.meta.json');
         await fs.writeFile(messagePath, 'message');
@@ -392,8 +394,69 @@ test('handleOneFile deletes exhausted temporary failures when dead-letter move f
             restore();
         }
 
-        await assert.rejects(() => fs.stat(messagePath));
-        await assert.rejects(() => fs.stat(metadataPath));
+        assert.equal(await fs.readFile(`${messagePath}.processing`, 'utf8'), 'message');
+        await fs.stat(metadataPath);
+    });
+});
+
+test('handleOneFile keeps a message whose requeue and dead-letter moves both fail', async () => {
+    await withTempDir(async (inputDir) => {
+        // The metadata is already gone when the requeue renames the message,
+        // so every move fails and rolls back.
+        const messagePath = path.join(inputDir, 'message.eml');
+        const metadataPath = path.join(inputDir, 'message.meta.json');
+        await fs.writeFile(messagePath, 'message');
+        await fs.writeFile(metadataPath, '{"recipient":"reports@example.test"}');
+
+        const temporaryError = Object.assign(new Error('downstream unavailable'), { kind: 'temporary' });
+        const { mod, restore } = freshIndexRequire(inputDir, {
+            runMessageProcessorInChild: async () => {
+                await fs.unlink(metadataPath);
+                throw temporaryError;
+            }
+        });
+
+        try {
+            await mod.handleOneFile(messagePath);
+        } finally {
+            restore();
+        }
+
+        assert.equal(await fs.readFile(`${messagePath}.processing`, 'utf8'), 'message');
+    });
+});
+
+test('handleOneFile dead-letters a refused message without waiting for retries', async () => {
+    await withTempDir(async (inputDir) => {
+        const deadLetterDir = path.join(inputDir, 'dead-letter');
+        await fs.mkdir(deadLetterDir, { recursive: true });
+
+        const messagePath = path.join(inputDir, 'message.eml');
+        const metadataPath = path.join(inputDir, 'message.meta.json');
+        await fs.writeFile(messagePath, 'message');
+        await fs.writeFile(metadataPath, '{"recipient":"reports@example.test"}');
+
+        const refusedError = Object.assign(new Error('Webhook refused payload with status 401'), { kind: 'dead-letter' });
+        const { mod, restore } = freshIndexRequire(inputDir, {
+            config: {
+                PROCESSOR_MAX_RETRIES_NUM: 10
+            },
+            runMessageProcessorInChild: async () => {
+                throw refusedError;
+            }
+        });
+
+        try {
+            await mod.handleOneFile(messagePath);
+        } finally {
+            restore();
+        }
+
+        const deadEntries = await fs.readdir(deadLetterDir);
+        assert.ok(deadEntries.some(name => /^message\.dead\.\d+\.eml$/.test(name)));
+        assert.ok(deadEntries.some(name => /^message\.dead\.\d+\.meta\.json$/.test(name)));
+        const inputEntries = await fs.readdir(inputDir);
+        assert.deepEqual(inputEntries.filter(name => name !== 'dead-letter'), []);
     });
 });
 
@@ -448,6 +511,36 @@ test('retry path helpers include attempt counter and dead-letter target', async 
             assert.equal(path.dirname(replayPath), inputDir);
             assert.equal(path.basename(replayPath), 'sample.retry.0.987654.eml');
         } finally {
+            restore();
+        }
+    });
+});
+
+test('toRetryPath doubles the delay with each attempt up to the maximum', async () => {
+    await withTempDir(async (inputDir) => {
+        const { mod, restore } = freshIndexRequire(inputDir, {
+            config: {
+                PROCESSOR_RETRY_DELAY_MS_NUM: 30_000,
+                PROCESSOR_MAX_RETRY_DELAY_MS_NUM: 3_600_000
+            }
+        });
+        const originalNow = Date.now;
+        Date.now = () => 1_000_000;
+        try {
+            const delayAfter = (attempt) => {
+                const retryPath = mod.toRetryPath(path.join(inputDir, 'sample.eml.processing'), attempt);
+                return mod.parseRetryState(path.basename(retryPath)).retryAt - 1_000_000;
+            };
+
+            assert.equal(delayAfter(0), 30_000);
+            assert.equal(delayAfter(1), 60_000);
+            assert.equal(delayAfter(2), 120_000);
+            assert.equal(delayAfter(6), 1_920_000);
+            assert.equal(delayAfter(7), 3_600_000);
+            assert.equal(delayAfter(124), 3_600_000);
+            assert.equal(delayAfter(5_000), 3_600_000);
+        } finally {
+            Date.now = originalNow;
             restore();
         }
     });

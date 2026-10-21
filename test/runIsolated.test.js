@@ -67,6 +67,22 @@ test('runMessageProcessorInChild maps permanent child failures to permanent proc
     );
 });
 
+test('runMessageProcessorInChild maps dead-letter child failures to dead-letter processing errors', async () => {
+    const child = new FakeChild();
+    child.onSend = () => {
+        setImmediate(() => child.emit('message', {
+            ok: false,
+            kind: 'dead-letter',
+            message: 'Webhook refused payload with status 401'
+        }));
+    };
+
+    await assert.rejects(
+        () => runMessageProcessorInChild('/tmp/message.eml', {}, { forkImpl: () => child }),
+        (err) => err?.name === 'DeadLetterProcessingError' && err?.kind === 'dead-letter'
+    );
+});
+
 test('runMessageProcessorInChild treats unexpected child exit as temporary failure', async () => {
     const child = new FakeChild();
     child.onSend = () => {

@@ -15,8 +15,17 @@ const env = process.env;
 
 const PROCESSOR_INPUT_DIR = env.PROCESSOR_INPUT_DIR || '/maildrop/incoming';
 const PROCESSOR_POLL_MS_NUM = mustNumber('PROCESSOR_POLL_MS', env.PROCESSOR_POLL_MS || '1000', { min: 100, max: 60_000 });
+// The wait between retries doubles from PROCESSOR_RETRY_DELAY_MS up to
+// PROCESSOR_MAX_RETRY_DELAY_MS. With the defaults, 125 retries keep a message
+// for about five days, as long as Postfix itself would keep trying, so a
+// backend that is down over a weekend loses nothing.
 const PROCESSOR_RETRY_DELAY_MS_NUM = mustNumber('PROCESSOR_RETRY_DELAY_MS', env.PROCESSOR_RETRY_DELAY_MS || '30000', { min: 1000 });
-const PROCESSOR_MAX_RETRIES_NUM = mustNumber('PROCESSOR_MAX_RETRIES', env.PROCESSOR_MAX_RETRIES || '20', { min: 0, max: 10_000 });
+const PROCESSOR_MAX_RETRY_DELAY_MS_NUM = mustNumber(
+    'PROCESSOR_MAX_RETRY_DELAY_MS',
+    env.PROCESSOR_MAX_RETRY_DELAY_MS || '3600000',
+    { min: 1000 }
+);
+const PROCESSOR_MAX_RETRIES_NUM = mustNumber('PROCESSOR_MAX_RETRIES', env.PROCESSOR_MAX_RETRIES || '125', { min: 0, max: 10_000 });
 const PROCESSOR_MAX_BATCH_SIZE_NUM = mustNumber('PROCESSOR_MAX_BATCH_SIZE', env.PROCESSOR_MAX_BATCH_SIZE || '10', { min: 1, max: 1000 });
 const PROCESSOR_MAX_CONCURRENCY_NUM = mustNumber(
     'PROCESSOR_MAX_CONCURRENCY',
@@ -36,6 +45,7 @@ module.exports = {
     PROCESSOR_INPUT_DIR,
     PROCESSOR_POLL_MS_NUM,
     PROCESSOR_RETRY_DELAY_MS_NUM,
+    PROCESSOR_MAX_RETRY_DELAY_MS_NUM,
     PROCESSOR_MAX_RETRIES_NUM,
     PROCESSOR_MAX_BATCH_SIZE_NUM,
     PROCESSOR_MAX_CONCURRENCY_NUM,

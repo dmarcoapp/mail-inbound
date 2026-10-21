@@ -4,7 +4,8 @@ const path = require('path');
 const { fork } = require('child_process');
 const {
     PermanentProcessingError,
-    TemporaryProcessingError
+    TemporaryProcessingError,
+    DeadLetterProcessingError
 } = require('../processingErrors');
 
 const CHILD_ENTRYPOINT = path.join(__dirname, 'workerChild.js');
@@ -15,6 +16,9 @@ function toProcessingError(result) {
     const message = String(result?.message || 'Message processing failed');
     if (result?.kind === 'permanent') {
         return new PermanentProcessingError(message);
+    }
+    if (result?.kind === 'dead-letter') {
+        return new DeadLetterProcessingError(message);
     }
     return new TemporaryProcessingError(message);
 }

@@ -6,6 +6,7 @@ const {
     PROCESSOR_INPUT_DIR,
     PROCESSOR_POLL_MS_NUM,
     PROCESSOR_RETRY_DELAY_MS_NUM,
+    PROCESSOR_MAX_RETRY_DELAY_MS_NUM,
     PROCESSOR_MAX_RETRIES_NUM,
     PROCESSOR_MAX_BATCH_SIZE_NUM,
     PROCESSOR_MAX_CONCURRENCY_NUM,
@@ -277,11 +278,15 @@ function toProcessingPath(filePath) {
     return path.join(dir, `${stripProcessingSuffix(baseName)}.processing`);
 }
 
+function retryDelayMs(attempt) {
+    return Math.min(PROCESSOR_RETRY_DELAY_MS_NUM * 2 ** attempt, PROCESSOR_MAX_RETRY_DELAY_MS_NUM);
+}
+
 function toRetryPath(filePath, attempt = 0) {
     const dir = path.dirname(filePath);
     const baseName = stripRetrySuffix(stripProcessingSuffix(path.basename(filePath)));
     const nextAttempt = attempt + 1;
-    const retryAt = Date.now() + PROCESSOR_RETRY_DELAY_MS_NUM;
+    const retryAt = Date.now() + retryDelayMs(attempt);
     if (baseName.endsWith('.eml')) {
         return path.join(dir, `${baseName.slice(0, -'.eml'.length)}.retry.${nextAttempt}.${retryAt}.eml`);
     }
@@ -334,8 +339,11 @@ async function moveBundle(filePath, nextPath) {
     try {
         await fs.rename(metadataPath, nextMetadataPath);
     } catch (err) {
-        await fs.rename(nextPath, filePath).catch(async () => {
-            await deleteFile(nextPath);
+        await fs.rename(nextPath, filePath).catch((rollbackErr) => {
+            error('processor', 'failed to move message back after its metadata stayed behind', rollbackErr, {
+                filePath: nextPath,
+                metadataPath
+            });
         });
         throw err;
     }
@@ -357,38 +365,49 @@ async function moveToDeadLetter(filePath) {
     return deadLetterPath;
 }
 
+// A message that cannot be moved is never deleted. It keeps its .processing
+// name, which the poll loop skips, and the startup recovery puts it back in the
+// queue the next time the processor starts.
+async function deadLetterFile(claimedPath, err, message, details = {}) {
+    let deadLetterPath;
+    try {
+        deadLetterPath = await moveToDeadLetter(claimedPath);
+    } catch (moveErr) {
+        error('processor', 'failed to dead-letter message, leaving it for the next start', moveErr, {
+            filePath: claimedPath
+        });
+        return;
+    }
+
+    incrementMetric('messages_dead_lettered_total');
+    error('processor', message, err, { filePath: deadLetterPath, ...details });
+}
+
 async function handleTemporaryFailure(claimedPath, err) {
     const retryState = parseRetryState(path.basename(claimedPath));
     const attempts = retryState?.attempt || 0;
 
     if (attempts >= PROCESSOR_MAX_RETRIES_NUM) {
-        const deadLetterPath = await moveToDeadLetter(claimedPath).catch(async (moveErr) => {
-            error('processor', 'failed to dead-letter message', moveErr, { filePath: claimedPath });
-            await deleteBundle(claimedPath);
-            return '';
+        await deadLetterFile(claimedPath, err, 'moved message to dead-letter after retry exhaustion', {
+            retries: attempts
         });
-        if (deadLetterPath) {
-            incrementMetric('messages_dead_lettered_total');
-            error('processor', 'moved message to dead-letter after retry exhaustion', err, {
-                filePath: deadLetterPath,
-                retries: attempts
-            });
-        }
         return;
     }
 
-    const retry = await requeueFile(claimedPath).catch(async (renameErr) => {
+    let retry;
+    try {
+        retry = await requeueFile(claimedPath);
+    } catch (renameErr) {
         error('processor', 'failed to requeue message', renameErr, { filePath: claimedPath });
-        await deleteBundle(claimedPath);
-        return null;
-    });
-    if (retry) {
-        incrementMetric('messages_requeued_total');
-        warn('processor', 'requeued message for retry', {
-            filePath: retry.retryPath,
-            retryAttempt: retry.attempt
-        });
+        await deadLetterFile(claimedPath, err, 'moved message to dead-letter after failing to requeue it');
+        return;
     }
+
+    incrementMetric('messages_requeued_total');
+    warn('processor', 'requeued message for retry', {
+        filePath: retry.retryPath,
+        retryAttempt: retry.attempt
+    });
 }
 
 async function readDeliveryMetadata(filePath) {
@@ -479,6 +498,11 @@ async function handleOneFile(filePath) {
         if (err?.kind === 'temporary') {
             incrementMetric('messages_deferred_total');
             await handleTemporaryFailure(claimedPath, err);
+            return;
+        }
+
+        if (err?.kind === 'dead-letter') {
+            await deadLetterFile(claimedPath, err, 'moved message to dead-letter because the backend refused it');
             return;
         }
 
@@ -626,6 +650,8 @@ async function run() {
         inputDir: PROCESSOR_INPUT_DIR,
         pollMs: PROCESSOR_POLL_MS_NUM,
         retryDelayMs: PROCESSOR_RETRY_DELAY_MS_NUM,
+        maxRetryDelayMs: PROCESSOR_MAX_RETRY_DELAY_MS_NUM,
+        maxRetries: PROCESSOR_MAX_RETRIES_NUM,
         maxConcurrency: PROCESSOR_MAX_CONCURRENCY_NUM
     });
 

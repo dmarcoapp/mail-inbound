@@ -11,14 +11,21 @@ const { storeStreamToTmpFile } = require('../io/storeStreamToTmpFile');
 const { safeUnlink } = require('../io/tmp');
 const { uploadToS3 } = require('../s3/upload');
 const { deleteFromS3 } = require('../s3/delete');
-const { postWebhook, isHttpSuccess, isHttpPermanentFailure } = require('../webhook/post');
+const {
+    postWebhook,
+    isHttpSuccess,
+    isHttpPermanentFailure,
+    isHttpDeadLetterFailure
+} = require('../webhook/post');
 const { sha256Hex } = require('../utils');
 const { info, warn, error } = require('../logger');
 const {
     PermanentProcessingError,
     TemporaryProcessingError,
+    DeadLetterProcessingError,
     isPermanentProcessingError,
-    isTemporaryProcessingError
+    isTemporaryProcessingError,
+    isDeadLetterProcessingError
 } = require('../processingErrors');
 
 const RETRYABLE_LOCAL_ERROR_CODES = new Set([
@@ -48,7 +55,11 @@ function toPreparedCleanupPaths(tmpPath, extracted) {
 }
 
 function normalizeProcessingError(err) {
-    if (err instanceof PermanentProcessingError || err instanceof TemporaryProcessingError) {
+    if (
+        err instanceof PermanentProcessingError
+        || err instanceof TemporaryProcessingError
+        || err instanceof DeadLetterProcessingError
+    ) {
         return err;
     }
 
@@ -58,6 +69,10 @@ function normalizeProcessingError(err) {
 
     if (isPermanentProcessingError(err)) {
         return new PermanentProcessingError(String(err?.message || 'Message rejected'), { cause: err });
+    }
+
+    if (isDeadLetterProcessingError(err)) {
+        return new DeadLetterProcessingError(String(err?.message || 'Message held'), { cause: err });
     }
 
     return null;
@@ -152,6 +167,10 @@ async function deliverWebhook(payload) {
 
     if (isHttpPermanentFailure(status)) {
         throw new PermanentProcessingError(`Webhook rejected payload with status ${status}`);
+    }
+
+    if (isHttpDeadLetterFailure(status)) {
+        throw new DeadLetterProcessingError(`Webhook refused payload with status ${status}`);
     }
 
     throw new TemporaryProcessingError(`Webhook temporary failure with status ${status}`);
@@ -295,6 +314,11 @@ async function processMessageFile(
 
         if (isTemporaryProcessingError(err)) {
             error('processor', 'deferred message', err, { emailId });
+            throw err;
+        }
+
+        if (isDeadLetterProcessingError(err)) {
+            error('processor', 'held message for the dead-letter directory', err, { emailId });
             throw err;
         }
 

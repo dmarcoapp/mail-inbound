@@ -5,7 +5,8 @@ const {
 } = require('./processMessage');
 const {
     isPermanentProcessingError,
-    isTemporaryProcessingError
+    isTemporaryProcessingError,
+    isDeadLetterProcessingError
 } = require('../processingErrors');
 
 let settled = false;
@@ -32,6 +33,14 @@ function toResultFromError(err) {
             ok: false,
             kind: 'temporary',
             message: String(err?.message || 'Message deferred')
+        };
+    }
+
+    if (isDeadLetterProcessingError(err)) {
+        return {
+            ok: false,
+            kind: 'dead-letter',
+            message: String(err?.message || 'Message held')
         };
     }
 
