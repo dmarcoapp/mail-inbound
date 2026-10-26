@@ -6,7 +6,8 @@ const { readSecret } = require('../utils');
 const { info, warn, error } = require('../logger');
 
 const PORT = Number(process.env.WEBHOOK_DEV_PORT || '3000');
-const MAX_BODY_BYTES = Number(process.env.WEBHOOK_DEV_MAX_BODY_BYTES || String(1024 * 1024));
+// Reports travel inside the request, so take as much as the processor sends.
+const MAX_BODY_BYTES = Number(process.env.WEBHOOK_DEV_MAX_BODY_BYTES || String(8 * 1024 * 1024));
 const MAX_CLOCK_SKEW_SECONDS = Number(process.env.WEBHOOK_DEV_MAX_CLOCK_SKEW_SECONDS || '900');
 
 function getWebhookSecret() {

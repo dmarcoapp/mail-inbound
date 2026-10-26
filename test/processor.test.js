@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
+const zlib = require('node:zlib');
 const { isPermanentProcessingError, isDeadLetterProcessingError } = require('../src/processingErrors');
 
 function mockModule(modulePath, exports) {
@@ -93,21 +94,13 @@ function makeMessage(xmlBody) {
     ].join('\r\n');
 }
 
-test('processMessageFile uploads valid DMARC reports and posts webhook', async () => {
+test('processMessageFile sends valid DMARC reports inside the webhook', async () => {
     const restoreConfig = mockModule(path.resolve(__dirname, '../src/config.js'), {
         REQUIRE_ATTACHMENTS_BOOL: true,
         MAX_ATTACHMENTS_NUM: 1,
         ALLOWED_ATTACHMENT_EXTENSIONS_SET: new Set(['.xml']),
         MAX_XML_BYTES_NUM: 1024 * 1024,
         MAX_COMPRESSION_RATIO_NUM: 100
-    });
-
-    let uploaded = null;
-    const restoreUpload = mockModule(path.resolve(__dirname, '../src/s3/upload.js'), {
-        uploadToS3: async (opts) => {
-            uploaded = opts;
-            return { bucket: 'bucket-a', key: opts.key };
-        }
     });
 
     let postedPayload = null;
@@ -136,20 +129,21 @@ test('processMessageFile uploads valid DMARC reports and posts webhook', async (
                 envelopeRecipients: ['envelope@example.test']
             });
             assert.equal(result.attachments, 1);
-            assert.match(uploaded.key, /^attachments\/[0-9a-f-]+$/i);
-            assert.equal(uploaded.meta.filename, 'report.xml');
             assert.equal(postedPayload.report_type, 'dmarc_aggregate');
-            assert.equal(postedPayload.attachments[0].key, uploaded.key);
             assert.deepEqual(postedPayload.to, ['envelope@example.test']);
+            assert.deepEqual(Object.keys(postedPayload.attachments[0]).sort(), ['content', 'content_type', 'filename']);
+            assert.equal(postedPayload.attachments[0].filename, 'report.xml');
+            assert.equal(postedPayload.attachments[0].content_type, 'application/xml');
+            const sent = zlib.gunzipSync(Buffer.from(postedPayload.attachments[0].content, 'base64')).toString('utf8');
+            assert.equal(sent, xml);
         });
     } finally {
         restoreWebhook();
-        restoreUpload();
         restoreConfig();
     }
 });
 
-test('processMessageFile rejects infected messages before upload', async () => {
+test('processMessageFile rejects infected messages before forwarding them', async () => {
     const restoreConfig = mockModule(path.resolve(__dirname, '../src/config.js'), {
         REQUIRE_ATTACHMENTS_BOOL: true,
         MAX_ATTACHMENTS_NUM: 1,
@@ -158,15 +152,12 @@ test('processMessageFile rejects infected messages before upload', async () => {
         MAX_COMPRESSION_RATIO_NUM: 100
     });
 
-    let uploadCalled = false;
-    const restoreUpload = mockModule(path.resolve(__dirname, '../src/s3/upload.js'), {
-        uploadToS3: async () => {
-            uploadCalled = true;
-            return { bucket: 'bucket-a', key: 'attachments/x' };
-        }
-    });
+    let posted = false;
     const restoreWebhook = mockModule(path.resolve(__dirname, '../src/webhook/post.js'), {
-        postWebhook: async () => 200,
+        postWebhook: async () => {
+            posted = true;
+            return 200;
+        },
         isHttpSuccess: () => true,
         isHttpPermanentFailure: () => false,
         isHttpDeadLetterFailure: () => false
@@ -193,10 +184,9 @@ test('processMessageFile rejects infected messages before upload', async () => {
                     && /malware detected/i.test(String(err?.message || ''))
             );
         });
-        assert.equal(uploadCalled, false);
+        assert.equal(posted, false);
     } finally {
         restoreWebhook();
-        restoreUpload();
         restoreConfig();
     }
 });
@@ -210,9 +200,6 @@ test('processMessageFile defers when authentication checks are temporarily unava
         MAX_COMPRESSION_RATIO_NUM: 100
     });
 
-    const restoreUpload = mockModule(path.resolve(__dirname, '../src/s3/upload.js'), {
-        uploadToS3: async () => ({ bucket: 'bucket-a', key: 'attachments/x' })
-    });
     const restoreWebhook = mockModule(path.resolve(__dirname, '../src/webhook/post.js'), {
         postWebhook: async () => 200,
         isHttpSuccess: () => true,
@@ -244,7 +231,6 @@ test('processMessageFile defers when authentication checks are temporarily unava
         });
     } finally {
         restoreWebhook();
-        restoreUpload();
         restoreConfig();
     }
 });
@@ -259,9 +245,6 @@ test('processMessageFile rejects non-DMARC attachments before webhook', async ()
     });
 
     let webhookCalled = false;
-    const restoreUpload = mockModule(path.resolve(__dirname, '../src/s3/upload.js'), {
-        uploadToS3: async () => ({ bucket: 'bucket-a', key: 'attachments/x' })
-    });
     const restoreWebhook = mockModule(path.resolve(__dirname, '../src/webhook/post.js'), {
         postWebhook: async () => {
             webhookCalled = true;
@@ -292,7 +275,6 @@ test('processMessageFile rejects non-DMARC attachments before webhook', async ()
         });
     } finally {
         restoreWebhook();
-        restoreUpload();
         restoreConfig();
     }
 });
@@ -314,12 +296,6 @@ test('processMessageFile treats retryable local attachment failures as temporary
         }
     });
 
-    const restoreUpload = mockModule(path.resolve(__dirname, '../src/s3/upload.js'), {
-        uploadToS3: async () => ({ bucket: 'bucket-a', key: 'attachments/x' })
-    });
-    const restoreDelete = mockModule(path.resolve(__dirname, '../src/s3/delete.js'), {
-        deleteFromS3: async () => {}
-    });
     const restoreWebhook = mockModule(path.resolve(__dirname, '../src/webhook/post.js'), {
         postWebhook: async () => 200,
         isHttpSuccess: () => true,
@@ -347,66 +323,9 @@ test('processMessageFile treats retryable local attachment failures as temporary
         });
     } finally {
         restoreWebhook();
-        restoreDelete();
-        restoreUpload();
         restoreStore();
         restoreConfig();
     }
-});
-
-test('processMessageFile removes uploaded attachments when webhook rejects payload', async () => {
-    const restoreConfig = mockModule(path.resolve(__dirname, '../src/config.js'), {
-        REQUIRE_ATTACHMENTS_BOOL: true,
-        MAX_ATTACHMENTS_NUM: 1,
-        ALLOWED_ATTACHMENT_EXTENSIONS_SET: new Set(['.xml']),
-        MAX_XML_BYTES_NUM: 1024 * 1024,
-        MAX_COMPRESSION_RATIO_NUM: 100
-    });
-
-    const deleted = [];
-    const restoreUpload = mockModule(path.resolve(__dirname, '../src/s3/upload.js'), {
-        uploadToS3: async (opts) => ({ bucket: 'bucket-a', key: opts.key })
-    });
-    const restoreDelete = mockModule(path.resolve(__dirname, '../src/s3/delete.js'), {
-        deleteFromS3: async (opts) => {
-            deleted.push(opts);
-        }
-    });
-    const restoreWebhook = mockModule(path.resolve(__dirname, '../src/webhook/post.js'), {
-        postWebhook: async () => 404,
-        isHttpSuccess: () => false,
-        isHttpPermanentFailure: () => true,
-        isHttpDeadLetterFailure: () => false
-    });
-
-    const xml = [
-        '<feedback>',
-        '  <report_metadata><org_name>Example Reporter</org_name><report_id>id-1</report_id></report_metadata>',
-        '  <policy_published><domain>example.com</domain></policy_published>',
-        '  <record><row></row></record>',
-        '</feedback>'
-    ].join('');
-
-    try {
-        const { processMessageFile } = freshProcessMessageRequire();
-        await withTempMessage(makeMessage(xml), async (filePath) => {
-            await assert.rejects(
-                () => processMessageFile(filePath, {
-                    envelopeRecipients: ['envelope@example.test']
-                }),
-                isPermanentProcessingError
-            );
-        });
-    } finally {
-        restoreWebhook();
-        restoreDelete();
-        restoreUpload();
-        restoreConfig();
-    }
-
-    assert.equal(deleted.length, 1);
-    assert.equal(deleted[0].bucket, 'bucket-a');
-    assert.match(deleted[0].key, /^attachments\//);
 });
 
 test('processMessageFile treats retryable parse failures as temporary', async () => {
@@ -426,10 +345,6 @@ test('processMessageFile treats retryable parse failures as temporary', async ()
             throw err;
         }
     });
-    const restoreDelete = mockModule(path.resolve(__dirname, '../src/s3/delete.js'), {
-        deleteFromS3: async () => {}
-    });
-
     try {
         const { processMessageFile } = freshProcessMessageRequire();
         await withTempMessage(makeMessage('<feedback></feedback>'), async (filePath) => {
@@ -441,7 +356,6 @@ test('processMessageFile treats retryable parse failures as temporary', async ()
             );
         });
     } finally {
-        restoreDelete();
         restoreMailparser();
         restoreConfig();
     }
@@ -467,10 +381,6 @@ test('processMessageFile closes the message stream when parsing fails', async ()
             throw err;
         }
     });
-    const restoreDelete = mockModule(path.resolve(__dirname, '../src/s3/delete.js'), {
-        deleteFromS3: async () => {}
-    });
-
     try {
         const { processMessageFile } = freshProcessMessageRequire();
         await withTempMessage(makeMessage('<feedback></feedback>'), async (filePath) => {
@@ -479,7 +389,6 @@ test('processMessageFile closes the message stream when parsing fails', async ()
             }));
         });
     } finally {
-        restoreDelete();
         restoreMailparser();
         restoreConfig();
     }
@@ -506,10 +415,6 @@ test('processMessageFile treats non-retryable parse failures as permanent', asyn
             throw new Error('parse-fail');
         }
     });
-    const restoreDelete = mockModule(path.resolve(__dirname, '../src/s3/delete.js'), {
-        deleteFromS3: async () => {}
-    });
-
     try {
         const { processMessageFile } = freshProcessMessageRequire();
         await withTempMessage(makeMessage('<feedback></feedback>'), async (filePath) => {
@@ -522,7 +427,6 @@ test('processMessageFile treats non-retryable parse failures as permanent', asyn
             await new Promise((resolve) => setImmediate(resolve));
         });
     } finally {
-        restoreDelete();
         restoreMailparser();
         restoreConfig();
     }
@@ -543,10 +447,6 @@ test('processMessageFile treats non-processing attachment policy errors as perma
             throw new Error('policy-bug');
         }
     });
-    const restoreDelete = mockModule(path.resolve(__dirname, '../src/s3/delete.js'), {
-        deleteFromS3: async () => {}
-    });
-
     try {
         const { processMessageFile } = freshProcessMessageRequire();
         await withTempMessage(makeMessage('<feedback></feedback>'), async (filePath) => {
@@ -558,7 +458,6 @@ test('processMessageFile treats non-processing attachment policy errors as perma
             );
         });
     } finally {
-        restoreDelete();
         restorePolicy();
         restoreConfig();
     }
@@ -573,12 +472,6 @@ test('processMessageFile retries webhook temporary HTTP failures', async () => {
         MAX_COMPRESSION_RATIO_NUM: 100
     });
 
-    const restoreUpload = mockModule(path.resolve(__dirname, '../src/s3/upload.js'), {
-        uploadToS3: async (opts) => ({ bucket: 'bucket-a', key: opts.key })
-    });
-    const restoreDelete = mockModule(path.resolve(__dirname, '../src/s3/delete.js'), {
-        deleteFromS3: async () => {}
-    });
     const restoreWebhook = mockModule(path.resolve(__dirname, '../src/webhook/post.js'), {
         postWebhook: async () => 503,
         isHttpSuccess: () => false,
@@ -606,157 +499,21 @@ test('processMessageFile retries webhook temporary HTTP failures', async () => {
         });
     } finally {
         restoreWebhook();
-        restoreDelete();
-        restoreUpload();
         restoreConfig();
     }
 });
 
-test('processMessageFile retries when S3 upload throws', async () => {
+test('processMessageFile discards the message when the webhook rejects the recipient', async () => {
     const restoreConfig = mockModule(path.resolve(__dirname, '../src/config.js'), {
         REQUIRE_ATTACHMENTS_BOOL: true,
         MAX_ATTACHMENTS_NUM: 1,
         ALLOWED_ATTACHMENT_EXTENSIONS_SET: new Set(['.xml']),
         MAX_XML_BYTES_NUM: 1024 * 1024,
         MAX_COMPRESSION_RATIO_NUM: 100
-    });
-
-    const restoreUpload = mockModule(path.resolve(__dirname, '../src/s3/upload.js'), {
-        uploadToS3: async () => {
-            throw new Error('s3-down');
-        }
-    });
-    const restoreDelete = mockModule(path.resolve(__dirname, '../src/s3/delete.js'), {
-        deleteFromS3: async () => {}
-    });
-    const restoreWebhook = mockModule(path.resolve(__dirname, '../src/webhook/post.js'), {
-        postWebhook: async () => 200,
-        isHttpSuccess: () => true,
-        isHttpPermanentFailure: () => false,
-        isHttpDeadLetterFailure: () => false
-    });
-
-    const xml = [
-        '<feedback>',
-        '  <report_metadata><org_name>Example Reporter</org_name><report_id>id-1</report_id></report_metadata>',
-        '  <policy_published><domain>example.com</domain></policy_published>',
-        '  <record><row></row></record>',
-        '</feedback>'
-    ].join('');
-
-    try {
-        const { processMessageFile } = freshProcessMessageRequire();
-        await withTempMessage(makeMessage(xml), async (filePath) => {
-            await assert.rejects(
-                () => processMessageFile(filePath, {
-                    envelopeRecipients: ['envelope@example.test']
-                }),
-                (err) => err?.name === 'TemporaryProcessingError'
-                    && err?.kind === 'temporary'
-                    && /S3 upload failed/.test(String(err?.message || ''))
-            );
-        });
-    } finally {
-        restoreWebhook();
-        restoreDelete();
-        restoreUpload();
-        restoreConfig();
-    }
-});
-
-test('processMessageFile warns when uploaded attachment cleanup fails after webhook request error', async () => {
-    const restoreConfig = mockModule(path.resolve(__dirname, '../src/config.js'), {
-        REQUIRE_ATTACHMENTS_BOOL: true,
-        MAX_ATTACHMENTS_NUM: 1,
-        ALLOWED_ATTACHMENT_EXTENSIONS_SET: new Set(['.xml']),
-        MAX_XML_BYTES_NUM: 1024 * 1024,
-        MAX_COMPRESSION_RATIO_NUM: 100
-    });
-
-    const warnings = [];
-    const restoreLogger = mockModule(path.resolve(__dirname, '../src/logger.js'), {
-        info: () => {},
-        warn: (...args) => {
-            warnings.push(args);
-        },
-        error: () => {}
-    });
-    const restoreUpload = mockModule(path.resolve(__dirname, '../src/s3/upload.js'), {
-        uploadToS3: async (opts) => ({ bucket: 'bucket-a', key: opts.key })
-    });
-    const restoreDelete = mockModule(path.resolve(__dirname, '../src/s3/delete.js'), {
-        deleteFromS3: async () => {
-            throw new Error('cleanup-fail');
-        }
-    });
-    const restoreWebhook = mockModule(path.resolve(__dirname, '../src/webhook/post.js'), {
-        postWebhook: async () => {
-            throw new Error('socket-hangup');
-        },
-        isHttpSuccess: () => false,
-        isHttpPermanentFailure: () => false,
-        isHttpDeadLetterFailure: () => false
-    });
-
-    const xml = [
-        '<feedback>',
-        '  <report_metadata><org_name>Example Reporter</org_name><report_id>id-1</report_id></report_metadata>',
-        '  <policy_published><domain>example.com</domain></policy_published>',
-        '  <record><row></row></record>',
-        '</feedback>'
-    ].join('');
-
-    try {
-        const { processMessageFile } = freshProcessMessageRequire();
-        await withTempMessage(makeMessage(xml), async (filePath) => {
-            await assert.rejects(
-                () => processMessageFile(filePath, {
-                    envelopeRecipients: ['envelope@example.test']
-                }),
-                (err) => err?.name === 'TemporaryProcessingError'
-                    && err?.kind === 'temporary'
-                    && /Webhook request failed/.test(String(err?.message || ''))
-            );
-        });
-    } finally {
-        restoreWebhook();
-        restoreDelete();
-        restoreUpload();
-        restoreLogger();
-        restoreConfig();
-    }
-
-    assert.ok(
-        warnings.some((args) => String(args[1] || '').includes('failed to remove uploaded attachment after downstream failure'))
-    );
-});
-
-test('processMessageFile removes the uploaded attachment when the webhook rejects the recipient', async () => {
-    const restoreConfig = mockModule(path.resolve(__dirname, '../src/config.js'), {
-        REQUIRE_ATTACHMENTS_BOOL: true,
-        MAX_ATTACHMENTS_NUM: 1,
-        ALLOWED_ATTACHMENT_EXTENSIONS_SET: new Set(['.xml']),
-        MAX_XML_BYTES_NUM: 1024 * 1024,
-        MAX_COMPRESSION_RATIO_NUM: 100
-    });
-
-    const uploaded = [];
-    const restoreUpload = mockModule(path.resolve(__dirname, '../src/s3/upload.js'), {
-        uploadToS3: async (opts) => {
-            uploaded.push(opts.key);
-            return { bucket: 'bucket-a', key: opts.key };
-        }
-    });
-
-    const deleted = [];
-    const restoreDelete = mockModule(path.resolve(__dirname, '../src/s3/delete.js'), {
-        deleteFromS3: async (opts) => {
-            deleted.push(opts);
-        }
     });
 
     // The status classifiers stay real, because what is under test is that a
-    // 404 counts as permanent and therefore triggers the cleanup.
+    // 404 counts as permanent.
     const realWebhook = require('../src/webhook/post');
     const restoreWebhook = mockModule(path.resolve(__dirname, '../src/webhook/post.js'), {
         postWebhook: async () => 404,
@@ -782,12 +539,8 @@ test('processMessageFile removes the uploaded attachment when the webhook reject
             );
         });
 
-        assert.equal(uploaded.length, 1);
-        assert.deepEqual(deleted, [{ bucket: 'bucket-a', key: uploaded[0] }]);
     } finally {
         restoreWebhook();
-        restoreDelete();
-        restoreUpload();
         restoreConfig();
     }
 });
@@ -799,21 +552,6 @@ test('processMessageFile holds the message for dead-letter when the webhook refu
         ALLOWED_ATTACHMENT_EXTENSIONS_SET: new Set(['.xml']),
         MAX_XML_BYTES_NUM: 1024 * 1024,
         MAX_COMPRESSION_RATIO_NUM: 100
-    });
-
-    const uploaded = [];
-    const restoreUpload = mockModule(path.resolve(__dirname, '../src/s3/upload.js'), {
-        uploadToS3: async (opts) => {
-            uploaded.push(opts.key);
-            return { bucket: 'bucket-a', key: opts.key };
-        }
-    });
-
-    const deleted = [];
-    const restoreDelete = mockModule(path.resolve(__dirname, '../src/s3/delete.js'), {
-        deleteFromS3: async (opts) => {
-            deleted.push(opts);
-        }
     });
 
     // A 401 is what a mismatched WEBHOOK_SECRET produces. The classifiers stay
@@ -842,14 +580,57 @@ test('processMessageFile holds the message for dead-letter when the webhook refu
                 (err) => isDeadLetterProcessingError(err) && !isPermanentProcessingError(err)
             );
         });
-
-        // The upload is removed all the same: a replay uploads the report again.
-        assert.equal(uploaded.length, 1);
-        assert.deepEqual(deleted, [{ bucket: 'bucket-a', key: uploaded[0] }]);
     } finally {
         restoreWebhook();
-        restoreDelete();
-        restoreUpload();
+        restoreConfig();
+    }
+});
+
+test('processMessageFile rejects a report too large to forward', async () => {
+    const restoreConfig = mockModule(path.resolve(__dirname, '../src/config.js'), {
+        REQUIRE_ATTACHMENTS_BOOL: true,
+        MAX_ATTACHMENTS_NUM: 1,
+        ALLOWED_ATTACHMENT_EXTENSIONS_SET: new Set(['.xml']),
+        MAX_XML_BYTES_NUM: 8 * 1024 * 1024,
+        MAX_COMPRESSION_RATIO_NUM: 100
+    });
+
+    let posted = false;
+    const restoreWebhook = mockModule(path.resolve(__dirname, '../src/webhook/post.js'), {
+        postWebhook: async () => {
+            posted = true;
+            return 200;
+        },
+        isHttpSuccess: () => true,
+        isHttpPermanentFailure: () => false,
+        isHttpDeadLetterFailure: () => false
+    });
+
+    // Random printable text barely compresses, so a report just under the XML
+    // limit still comes to more than the backend accepts in one request.
+    const charset = Buffer.from('!#$%()*+,-./0123456789:;=?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[]^_abcdefghijklmnopqrstuvwxyz{|}~');
+    const noise = Buffer.from(require('node:crypto').randomBytes(8 * 1024 * 1024 - 1024).map(byte => charset[byte % charset.length]));
+    const xml = [
+        '<feedback>',
+        '  <report_metadata><org_name>',
+        noise.toString('latin1'),
+        '</org_name><report_id>id-1</report_id></report_metadata>',
+        '  <policy_published><domain>example.com</domain></policy_published>',
+        '  <record><row></row></record>',
+        '</feedback>'
+    ].join('');
+
+    try {
+        const { processMessageFile } = freshProcessMessageRequire();
+        await withTempMessage(makeMessage(xml), async (filePath) => {
+            await assert.rejects(
+                () => processMessageFile(filePath, { envelopeRecipients: ['reports@example.test'] }),
+                (err) => isPermanentProcessingError(err) && /too large to forward/.test(String(err?.message || ''))
+            );
+        });
+        assert.equal(posted, false);
+    } finally {
+        restoreWebhook();
         restoreConfig();
     }
 });

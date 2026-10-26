@@ -1,6 +1,8 @@
 'use strict';
 
 const fs = require('fs');
+const { promisify } = require('util');
+const zlib = require('zlib');
 const { simpleParser } = require('mailparser');
 const { validateAttachmentsOrThrow, getSafeFilename } = require('../policy/attachmentPolicy');
 const { extractXmlFromFile } = require('../attachments/extractXml');
@@ -9,8 +11,6 @@ const { scanFileWithClamav } = require('../clamav/scan');
 const { validateMessageAuthentication } = require('../auth/validate');
 const { storeStreamToTmpFile } = require('../io/storeStreamToTmpFile');
 const { safeUnlink } = require('../io/tmp');
-const { uploadToS3 } = require('../s3/upload');
-const { deleteFromS3 } = require('../s3/delete');
 const {
     postWebhook,
     isHttpSuccess,
@@ -27,6 +27,14 @@ const {
     isTemporaryProcessingError,
     isDeadLetterProcessingError
 } = require('../processingErrors');
+
+const gzip = promisify(zlib.gzip);
+
+// PHP's default post_max_size, which the backend runs with. A report goes in
+// the webhook gzip-compressed, so even the largest one the limits allow is
+// usually a fraction of this. One that is not is turned away here, where the
+// message is still on hand, rather than lost as an unreadable request.
+const WEBHOOK_MAX_BODY_BYTES = 8 * 1024 * 1024;
 
 const RETRYABLE_LOCAL_ERROR_CODES = new Set([
     'EACCES',
@@ -87,13 +95,10 @@ async function prepareAttachment(att) {
         extracted = await extractXmlFromFile({ filePath: stored.filePath, filename });
         await validateAggregateDmarcReport({ filePath: extracted.filePath });
         return {
-            id: stored.id,
             filePath: extracted.filePath,
             filename: extracted.filename,
             contentType: extracted.contentType || 'application/xml',
-            cleanupPaths: toPreparedCleanupPaths(stored.filePath, extracted),
-            contentDisposition: att.contentDisposition || '',
-            contentId: att.cid || ''
+            cleanupPaths: toPreparedCleanupPaths(stored.filePath, extracted)
         };
     } catch (err) {
         await safeUnlink(stored.filePath);
@@ -128,29 +133,21 @@ function wrapProcessingError(
     return new PermanentProcessingError(String(err?.message || permanentMessage), { cause: err });
 }
 
-async function uploadPreparedAttachment(prepared) {
+async function encodePreparedAttachment(prepared) {
+    let content;
     try {
-        const s3loc = await uploadToS3({
-            key: `attachments/${prepared.id}`,
-            filePath: prepared.filePath,
-            meta: {
-                filename: prepared.filename,
-                contentType: prepared.contentType,
-                contentDisposition: prepared.contentDisposition,
-                contentId: prepared.contentId
-            }
-        });
-
-        return {
-            id: prepared.id,
-            bucket: s3loc.bucket,
-            key: s3loc.key,
-            filename: prepared.filename,
-            content_type: prepared.contentType
-        };
+        content = (await gzip(await fs.promises.readFile(prepared.filePath))).toString('base64');
     } catch (err) {
-        throw new TemporaryProcessingError('S3 upload failed', { cause: err });
+        throw wrapProcessingError(err, {
+            temporaryMessage: 'Message deferred: failed to read the extracted report'
+        });
     }
+
+    return {
+        filename: prepared.filename,
+        content_type: prepared.contentType,
+        content
+    };
 }
 
 async function deliverWebhook(payload) {
@@ -176,25 +173,6 @@ async function deliverWebhook(payload) {
     throw new TemporaryProcessingError(`Webhook temporary failure with status ${status}`);
 }
 
-async function cleanupUploadedAttachments(attachments) {
-    const cleanupTargets = Array.isArray(attachments) ? attachments : [];
-
-    await Promise.allSettled(cleanupTargets.map(async (attachment) => {
-        try {
-            await deleteFromS3({
-                bucket: attachment.bucket,
-                key: attachment.key
-            });
-        } catch (err) {
-            warn('processor', 'failed to remove uploaded attachment after downstream failure', {
-                key: attachment?.key || '',
-                bucket: attachment?.bucket || '',
-                error: String(err?.message || err)
-            });
-        }
-    }));
-}
-
 async function processMessageFile(
     filePath,
     {
@@ -205,9 +183,8 @@ async function processMessageFile(
     const emailId = await sha256File(filePath);
     const createdAt = new Date().toISOString();
     const preparedAttachments = [];
-    const uploadedAttachments = [];
+    const encodedAttachments = [];
     let parsed = null;
-    let deliveryCommitted = false;
     let authResults = {
         spf: 'none',
         dkim: 'none',
@@ -277,7 +254,7 @@ async function processMessageFile(
         }
 
         for (const prepared of preparedAttachments) {
-            uploadedAttachments.push(await uploadPreparedAttachment(prepared));
+            encodedAttachments.push(await encodePreparedAttachment(prepared));
         }
 
         const payload = {
@@ -287,15 +264,18 @@ async function processMessageFile(
             to: recipients,
             message_id: parsed.messageId || '',
             report_type: 'dmarc_aggregate',
-            attachments: uploadedAttachments
+            attachments: encodedAttachments
         };
 
+        if (Buffer.byteLength(JSON.stringify(payload)) > WEBHOOK_MAX_BODY_BYTES) {
+            throw new PermanentProcessingError('Message rejected: report too large to forward');
+        }
+
         await deliverWebhook(payload);
-        deliveryCommitted = true;
 
         info('processor', 'accepted message', {
             emailId,
-            attachments: uploadedAttachments.length,
+            attachments: encodedAttachments.length,
             spf: authResults.spf,
             dkim: authResults.dkim,
             dmarc: authResults.dmarc,
@@ -304,14 +284,10 @@ async function processMessageFile(
 
         return {
             emailId,
-            attachments: uploadedAttachments.length,
+            attachments: encodedAttachments.length,
             payload
         };
     } catch (err) {
-        if (!deliveryCommitted && uploadedAttachments.length > 0) {
-            await cleanupUploadedAttachments(uploadedAttachments);
-        }
-
         if (isTemporaryProcessingError(err)) {
             error('processor', 'deferred message', err, { emailId });
             throw err;

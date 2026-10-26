@@ -24,9 +24,8 @@
 > for people working on it.
 
 This gateway accepts mail for one domain, scans every message, keeps what looks
-like a DMARC aggregate report and rejects the rest, then uploads what it kept to
-S3-compatible storage and announces it with a signed webhook. Postfix is
-inbound-only and never relays.
+like a DMARC aggregate report and rejects the rest, then delivers each report
+it kept in a signed webhook. Postfix is inbound-only and never relays.
 
 It runs as part of DMARCo, or in front of any application that would rather
 receive DMARC reports as a webhook than as email.
@@ -34,7 +33,7 @@ receive DMARC reports as a webhook than as email.
 ## Overview
 
 ```text
-Internet -> Postfix -> maildrop -> Node processor -> ClamAV -> S3 -> webhook
+Internet -> Postfix -> maildrop -> Node processor -> ClamAV -> webhook
 ```
 
 Services:
@@ -43,18 +42,18 @@ Services:
 - `processor`: Node.js worker that reads queued `.eml` files
 - `clamav`: antivirus scanner
 - `certbot` and `cert_exporter`: Let's Encrypt automation for Postfix TLS
-- `webhook-dev` and `minio`: optional local development services
+- `webhook-dev`: optional local development webhook receiver
 
 ## Features
 
 - Inbound-only Postfix: mail is accepted for one domain, outbound relay is
   disabled
-- ClamAV scanning of every message before anything is uploaded or delivered
+- ClamAV scanning of every message before anything is delivered
 - Attachment allowlist with count, size, and archive expansion limits
 - ZIP and gzip reports extracted and normalized to XML
 - Non-DMARC XML, malformed archives, and oversized attachments rejected
-- S3-compatible upload of accepted report files
-- Signed webhook delivery with an HMAC signature and a replay timestamp
+- Signed webhook delivery of each report, gzip-compressed, with an HMAC
+  signature and a replay timestamp
 - Retries with a dead-letter directory, and a replay command for it
 - Let's Encrypt automation for SMTP TLS, plus external, self-signed, and
   disabled modes
@@ -67,7 +66,7 @@ Services:
   providers block port `25` until you ask them to open it
 - A domain you can add `A` and `MX` records to, receiving no other mail
 - Roughly 2 GB of memory, most of it for the ClamAV signature database
-- S3-compatible object storage, and an endpoint that accepts the webhook
+- An endpoint that accepts the webhook
 - A Cloudflare DNS API token, only for `SMTP_TLS_MODE=real`
 
 ## Get started
@@ -96,7 +95,6 @@ Review these values in `.env`:
 - `SMTP_HOSTNAME`: public MX hostname, for example `mx.example.com`
 - `ACCEPTED_RCPT_DOMAIN`: domain this server accepts mail for
 - `WEBHOOK_URL`: downstream webhook endpoint
-- `S3_ENDPOINT`, `S3_REGION`, `S3_BUCKET`: object storage target
 - `CERT_EMAIL`: Let's Encrypt registration email
 
 Put this `docker-compose.yml` in the same directory. It runs the published
@@ -133,8 +131,6 @@ services:
       - .env
     secrets:
       - webhook_secret
-      - s3_access_key
-      - s3_secret_key
     depends_on:
       clamav:
         condition: service_started
@@ -198,12 +194,6 @@ secrets:
   webhook_secret:
     file: ./secrets/webhook_secret.txt
 
-  s3_access_key:
-    file: ./secrets/s3_access_key.txt
-
-  s3_secret_key:
-    file: ./secrets/s3_secret_key.txt
-
   cloudflare_api_token:
     file: ./secrets/cloudflare_token.txt
 ```
@@ -214,8 +204,6 @@ Create the Docker secret files and start the stack:
 ```bash
 mkdir -p secrets
 printf '<strong webhook secret>\n' > secrets/webhook_secret.txt
-printf '<s3 access key>\n' > secrets/s3_access_key.txt
-printf '<s3 secret key>\n' > secrets/s3_secret_key.txt
 printf '<cloudflare dns token>\n' > secrets/cloudflare_token.txt
 docker compose pull
 docker compose up -d
@@ -247,7 +235,8 @@ Common settings:
 - `REQUIRE_ATTACHMENTS`: require at least one attachment
 - `MAX_ATTACHMENTS`: accepted attachment count
 - `ALLOWED_ATTACHMENT_EXTENSIONS`: default `.xml,.zip,.gz,.gzip`
-- `MAX_XML_BYTES`: extracted XML size limit
+- `MAX_XML_BYTES`: extracted XML size limit, 8 MB by default, and a higher value
+  is lowered to 8 MB
 - `MAX_COMPRESSION_RATIO`: archive expansion limit
 - `CLAMAV_SCAN_ENABLED`: enable ClamAV scanning
 - `PROCESSOR_MAX_RETRIES`: retries before dead-lettering, default `125`. The
@@ -268,12 +257,10 @@ Postfix TLS modes:
 Docker secrets are mounted as:
 
 - `/run/secrets/webhook_secret`
-- `/run/secrets/s3_access_key`
-- `/run/secrets/s3_secret_key`
 - `/run/secrets/cloudflare_api_token`
 
-`WEBHOOK_URL` and `S3_ENDPOINT` may use plain HTTP on a trusted internal
-network. This app does not enforce TLS for those endpoints.
+`WEBHOOK_URL` may use plain HTTP on a trusted internal network. This app does
+not enforce TLS for it.
 
 ## Webhook
 
@@ -292,7 +279,11 @@ HMAC_SHA256(timestamp + "." + raw_body, WEBHOOK_SECRET)
 ```
 
 Payload includes `email_id`, `created_at`, `from`, `to`, `message_id`,
-`report_type`, and uploaded `attachments`.
+`report_type`, and `attachments`. Each attachment carries the extracted report
+XML in `content`, gzip-compressed and base64-encoded. A report is at most
+`MAX_XML_BYTES`, 8 MB, once unpacked, and a message whose request would come
+to more than 8 MB, the default body limit of PHP, is rejected rather than
+sent.
 
 Example payload:
 
@@ -306,11 +297,9 @@ Example payload:
   "report_type": "dmarc_aggregate",
   "attachments": [
     {
-      "id": "4f7c3ef4-5f9c-41fb-a61a-1d6c75f8f0b7",
-      "bucket": "mail",
-      "key": "attachments/4f7c3ef4-5f9c-41fb-a61a-1d6c75f8f0b7",
       "filename": "example.net!example.com!1717372800!1717459199.xml",
-      "content_type": "application/xml"
+      "content_type": "application/xml",
+      "content": "H4sIAAAAAAAAA7Ox..."
     }
   ]
 }
@@ -324,16 +313,15 @@ same secret on both sides.
 
 - Postfix accepts mail only for `ACCEPTED_RCPT_DOMAIN`; outbound relay is
   disabled.
-- Each message is scanned with ClamAV before any attachment is uploaded or
-  delivered.
+- Each message is scanned with ClamAV before any attachment is delivered.
 - Attachments must match the configured allowlist and are limited by count and
   size.
-- ZIP and gzip reports are extracted and normalized to XML before upload.
+- ZIP and gzip reports are extracted and normalized to XML before delivery.
 - Oversized attachments, unsafe archive expansion, malformed archives, and
   non-DMARC XML are rejected, so only messages that look like DMARC aggregate
   reports are forwarded.
-- Temporary S3, webhook, scanner, and DNS failures are retried; exhausted
-  messages move to the dead-letter directory.
+- Temporary webhook, scanner, and DNS failures are retried; exhausted messages
+  move to the dead-letter directory.
 - A webhook answer of `404`, an unknown recipient, discards the message. Any
   other `4xx` the retries cannot fix, such as `401` from a mismatched secret,
   moves it to the dead-letter directory straight away, to be replayed once the
@@ -353,7 +341,6 @@ rather decide when new versions land.
 Before exposing the service:
 
 - Use strong Docker secret values.
-- Create the S3 bucket.
 - Confirm your webhook validates `X-Signature`.
 - Confirm DNS, MX, firewall, and port `25` routing.
 
@@ -372,8 +359,6 @@ For local Docker development without ACME credentials:
 cp .env.example .env
 mkdir -p secrets
 printf 'dev-webhook-secret\n' > secrets/webhook_secret.txt
-printf 'dev-access-key\n' > secrets/s3_access_key.txt
-printf 'dev-secret-key\n' > secrets/s3_secret_key.txt
 printf 'unused\n' > secrets/cloudflare_token.txt
 ```
 
@@ -383,15 +368,13 @@ Set local-friendly values in `.env`:
 SMTP_TLS_MODE=self-signed
 ```
 
-Then start the local development stack with MinIO and a mock webhook receiver:
+Then start the local development stack with a mock webhook receiver:
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build postfix processor clamav minio minio-init webhook-dev
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build postfix processor clamav webhook-dev
 ```
 
-MinIO is available at `http://localhost:9001` with `dev-access-key` /
-`dev-secret-key`. The dev webhook receiver listens on
-`http://localhost:3000/inbound-email`.
+The dev webhook receiver listens on `http://localhost:3000/inbound-email`.
 
 Before opening a pull request, run what CI runs:
 

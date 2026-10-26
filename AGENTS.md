@@ -7,5 +7,5 @@ Guidelines for AI assistants contributing to DMARCo Mail Inbound.
 - Its purpose is to safely receive mail from external sources and forward it to a backend application.
 
 ## Deployment Constraints
-- Do not enforce TLS by default for `WEBHOOK_URL` or `S3_ENDPOINT`.
-- In this project, those endpoints may legitimately run over plain HTTP on an internal Docker network, where global TLS enforcement would break valid deployments.
+- Do not enforce TLS by default for `WEBHOOK_URL`.
+- It may legitimately run over plain HTTP on an internal Docker network, where global TLS enforcement would break valid deployments.

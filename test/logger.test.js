@@ -16,7 +16,7 @@ test('logger.error includes nested cause details when available', () => {
         const cause = Object.assign(new Error('connect ECONNREFUSED 10.0.0.5:9000'), {
             code: 'ECONNREFUSED'
         });
-        const wrapped = Object.assign(new Error('S3 upload failed'), {
+        const wrapped = Object.assign(new Error('Webhook request failed'), {
             name: 'TemporaryProcessingError',
             kind: 'temporary',
             cause
@@ -33,7 +33,7 @@ test('logger.error includes nested cause details when available', () => {
     const meta = JSON.parse(line.slice(line.indexOf('{')));
 
     assert.equal(meta.emailId, 'abc123');
-    assert.equal(meta.error, 'S3 upload failed');
+    assert.equal(meta.error, 'Webhook request failed');
     assert.equal(meta.name, 'TemporaryProcessingError');
     assert.equal(meta.kind, 'temporary');
     assert.equal(meta.causeError, 'connect ECONNREFUSED 10.0.0.5:9000');

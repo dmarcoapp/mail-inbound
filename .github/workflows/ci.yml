@@ -46,8 +46,6 @@ jobs:
           cp .env.example .env
           mkdir -p secrets
           printf 'ci-webhook-secret\n' > secrets/webhook_secret.txt
-          printf 'ci-access-key\n' > secrets/s3_access_key.txt
-          printf 'ci-secret-key\n' > secrets/s3_secret_key.txt
           printf 'unused\n' > secrets/cloudflare_token.txt
 
       - name: Validate Compose config

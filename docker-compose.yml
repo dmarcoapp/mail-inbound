@@ -29,8 +29,6 @@ services:
         required: false
     secrets:
       - webhook_secret
-      - s3_access_key
-      - s3_secret_key
     depends_on:
       clamav:
         condition: service_started
@@ -101,12 +99,6 @@ volumes:
 secrets:
   webhook_secret:
     file: ./secrets/webhook_secret.txt
-
-  s3_access_key:
-    file: ./secrets/s3_access_key.txt
-
-  s3_secret_key:
-    file: ./secrets/s3_secret_key.txt
 
   cloudflare_api_token:
     file: ./secrets/cloudflare_token.txt
