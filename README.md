@@ -14,11 +14,19 @@
   <a href="https://github.com/dmarcoapp/mail-inbound/pkgs/container/mail-inbound%2Fprocessor"><img alt="Container images" src="https://img.shields.io/badge/ghcr.io-dmarcoapp%2Fmail--inbound-1f6feb"></a>
 </p>
 
+> [!WARNING]
+> **This gateway is being retired.** From 0.5, DMARCo reads DMARC reports from
+> the mailboxes they already arrive in, over IMAP, and takes uploads through its
+> API, so it no longer needs a mail server of its own. Existing installs keep
+> this gateway running with the `mail-gateway` Compose profile for now. New
+> installs should use a mailbox instead. This repository will be archived, and
+> later deleted.
+
 > [!IMPORTANT]
 > **Start at [dmarcoapp/dmarcoapp](https://github.com/dmarcoapp/dmarcoapp).**
-> That repository installs all of DMARCo with one command: this mail gateway,
-> the backend, and the dashboard. It is also the issue tracker for the whole
-> project, so
+> That repository installs all of DMARCo with one command: the backend, the
+> dashboard, and this mail gateway if you want it. It is also the issue tracker
+> for the whole project, so
 > [report anything that goes wrong there](https://github.com/dmarcoapp/dmarcoapp/issues/new/choose),
 > including problems in this component. What follows is one component's source,
 > for people working on it.
@@ -74,9 +82,9 @@ Services:
 > [!TIP]
 > Installing DMARCo itself? Use
 > [`dmarcoapp/dmarcoapp`](https://github.com/dmarcoapp/dmarcoapp) instead. It
-> runs this gateway together with the backend and the dashboard, and generates
-> the secrets for you. Follow the steps below only when you want the gateway on
-> its own, in front of your own application.
+> runs the backend and the dashboard, adds this gateway when you pick it, and
+> generates the secrets for you. Follow the steps below only when you want the
+> gateway on its own, in front of your own application.
 
 Create a deployment directory and download the example environment file:
 
@@ -307,7 +315,10 @@ Example payload:
 
 If you use [`dmarcoapp/backend`](https://github.com/dmarcoapp/backend), point
 `WEBHOOK_URL` at its `/v1/webhook/inbound_report_email` endpoint and use the
-same secret on both sides.
+same secret on both sides. From 0.5 the backend's secret is made on the
+dashboard's Platform page, under Report intake, where API intake has to be
+switched on. While it is off, or no secret is set, the backend answers `503`,
+which this gateway retries like any other temporary failure.
 
 ## Message handling
 
