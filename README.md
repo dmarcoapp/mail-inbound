@@ -314,11 +314,12 @@ Example payload:
 ```
 
 If you use [`dmarcoapp/backend`](https://github.com/dmarcoapp/backend), point
-`WEBHOOK_URL` at its `/v1/webhook/inbound_report_email` endpoint and use the
-same secret on both sides. From 0.5 the backend's secret is made on the
-dashboard's Platform page, under Report intake, where API intake has to be
-switched on. While it is off, or no secret is set, the backend answers `503`,
-which this gateway retries like any other temporary failure.
+`WEBHOOK_URL` at its `/v1/intake/webhook` endpoint, which before 0.5 was
+`/v1/webhook/inbound_report_email` and still answers there, and use the same
+secret on both sides. From 0.5 the backend's secret is made on the dashboard's
+Platform page, under Report Intake, where the API and its webhook have to be
+switched on. While either is off, or no secret is set, the backend answers
+`503`, which this gateway retries like any other temporary failure.
 
 ## Message handling
 
