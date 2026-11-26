@@ -5,7 +5,7 @@
 <h1 align="center">DMARCo Mail Inbound</h1>
 
 <p align="center">
-  Self-hosted inbound mail gateway for DMARC aggregate reports.
+  Self-hosted inbound mail gateway for DMARC aggregate reports. Retired.
 </p>
 
 <p align="center">
@@ -15,21 +15,26 @@
 </p>
 
 > [!WARNING]
-> **This gateway is being retired.** From 0.5, DMARCo reads DMARC reports from
-> the mailboxes they already arrive in, over IMAP, and takes uploads through its
-> API, so it no longer needs a mail server of its own. Existing installs keep
-> this gateway running with the `mail-gateway` Compose profile for now. New
-> installs should use a mailbox instead. This repository will be archived, and
-> later deleted.
+> **This repository is archived, and the mail gateway is retired.** Its last
+> release is `0.4`, and it gets no more updates, security fixes included.
+> DMARCo reads DMARC reports from the mailboxes they already arrive in, over
+> IMAP, and takes uploads through its API, so it needs no mail server of its
+> own.
+>
+> New installs cannot choose the gateway. Installs that already use it keep
+> it, on `0.4`, until they move to a mailbox, which
+> [Moving to a mailbox](https://github.com/dmarcoapp/dmarcoapp#moving-to-a-mailbox)
+> describes. A later DMARCo release removes the gateway, and this repository
+> will be deleted after that.
 
 > [!IMPORTANT]
-> **Start at [dmarcoapp/dmarcoapp](https://github.com/dmarcoapp/dmarcoapp).**
-> That repository installs all of DMARCo with one command: the backend, the
-> dashboard, and this mail gateway if you want it. It is also the issue tracker
-> for the whole project, so
+> **DMARCo lives at [dmarcoapp/dmarcoapp](https://github.com/dmarcoapp/dmarcoapp).**
+> That repository installs all of it with one command, and it is the issue
+> tracker for the whole project, so
 > [report anything that goes wrong there](https://github.com/dmarcoapp/dmarcoapp/issues/new/choose),
-> including problems in this component. What follows is one component's source,
-> for people working on it.
+> including problems with this gateway. What follows is the gateway's source
+> and documentation as of its last release, kept for the installs that still
+> run it.
 
 This gateway accepts mail for one domain, scans every message, keeps what looks
 like a DMARC aggregate report and rejects the rest, then delivers each report
@@ -116,7 +121,7 @@ name: dmarco-mail-inbound
 
 services:
   postfix:
-    image: ghcr.io/dmarcoapp/mail-inbound/postfix:latest
+    image: ghcr.io/dmarcoapp/mail-inbound/postfix:0.4
     container_name: mail-postfix
     env_file:
       - .env
@@ -133,7 +138,7 @@ services:
       retries: 3
 
   processor:
-    image: ghcr.io/dmarcoapp/mail-inbound/processor:latest
+    image: ghcr.io/dmarcoapp/mail-inbound/processor:0.4
     container_name: mail-processor
     env_file:
       - .env
@@ -153,7 +158,7 @@ services:
       start_period: 75s
 
   certbot:
-    image: ghcr.io/dmarcoapp/mail-inbound/certbot:latest
+    image: ghcr.io/dmarcoapp/mail-inbound/certbot:0.4
     container_name: certbot-cloudflare
     env_file:
       - .env
@@ -165,7 +170,7 @@ services:
     restart: unless-stopped
 
   cert_exporter:
-    image: ghcr.io/dmarcoapp/mail-inbound/cert-exporter:latest
+    image: ghcr.io/dmarcoapp/mail-inbound/cert-exporter:0.4
     container_name: cert-exporter
     env_file:
       - .env
@@ -345,10 +350,10 @@ switched on. While either is off, or no secret is set, the backend answers
 
 ## Production
 
-Images are published to `ghcr.io/dmarcoapp/mail-inbound/postfix`, `/processor`,
-`/certbot`, and `/cert-exporter` on every GitHub release, tagged with the
-release version and `latest`. Pin the tags in `docker-compose.yml` if you would
-rather decide when new versions land.
+Images were published to `ghcr.io/dmarcoapp/mail-inbound/postfix`,
+`/processor`, `/certbot`, and `/cert-exporter` on every GitHub release, tagged
+with the release version and `latest`. The last release is `0.4`, which
+`latest` names as well. Use `0.4`, which says that no newer version is coming.
 
 Before exposing the service:
 
